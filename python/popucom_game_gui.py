@@ -138,18 +138,18 @@ class PomPomGameGUI:
         control_frame.pack(pady=5)
 
         Radiobutton(control_frame, text="人机对战", variable=self.game_mode, value="human_vs_ai",
-                    command=self._reset_and_start_new_game).pack(side=tk.LEFT)
+                    command=self._start_game_flow).pack(side=tk.LEFT)
         Radiobutton(control_frame, text="人人对战", variable=self.game_mode, value="human_vs_human",
-                    command=self._reset_and_start_new_game).pack(side=tk.LEFT)
+                    command=self._start_game_flow).pack(side=tk.LEFT)
         Radiobutton(control_frame, text="机机对战", variable=self.game_mode, value="ai_vs_ai",
-                    command=self._reset_and_start_new_game).pack(side=tk.LEFT)
+                    command=self._start_game_flow).pack(side=tk.LEFT)
 
         self.role_frame = Frame(self.master)
         self.role_frame.pack(pady=5)
         Radiobutton(self.role_frame, text="我执红 (先手)", variable=self.human_player_choice, value="human_black",
-                    command=self._reset_and_start_new_game).pack(side=tk.LEFT)
+                    command=self._start_game_flow).pack(side=tk.LEFT)
         Radiobutton(self.role_frame, text="AI执红 (先手)", variable=self.human_player_choice, value="ai_black",
-                    command=self._reset_and_start_new_game).pack(side=tk.LEFT)
+                    command=self._start_game_flow).pack(side=tk.LEFT)
 
         action_frame = Frame(self.master)
         action_frame.pack(pady=5)
@@ -268,6 +268,7 @@ class PomPomGameGUI:
             y_offset = self.cell_size / 4
 
             # 3. 绘制分析信息，并为最佳着法添加视觉效果
+            current_font_weight = "bold"
             for i, (sq, data) in enumerate(sorted_moves):
                 if data['p'] > 0.001:
                     r, c = sq // BOARD_SIZE, sq % BOARD_SIZE
@@ -281,21 +282,37 @@ class PomPomGameGUI:
                         # 绘制一个金色的高亮边框
                         self.canvas.create_rectangle(x1 + 2, y1 + 2, x2 - 2, y2 - 2, outline=BEST_MOVE_HIGHLIGHT_COLOR,
                                                      width=3)
-                        current_font_weight = "bold"
-                    else:
-                        current_font_weight = "normal"
+                        #current_font_weight = "bold"
+                    #else:
+                        #current_font_weight = "normal"
 
                     # 第一行：预测净胜分
                     q_value = data['q']
                     score_text = f"胜分:{q_value * BOARD_SQUARES:.1f}"
-                    score_color = "darkgreen" if q_value >= 0 else "darkred"
+                    if q_value >=0.04:  # 3.24
+                        score_color = "blue"
+                    elif q_value <=-0.04:
+                        score_color = "red"
+                    elif q_value >=0.02:  # 1.62
+                        score_color = "green"
+                    elif q_value <=-0.02:
+                        score_color = "orange"
+                    else:
+                        score_color = "black"
                     self.canvas.create_text(center_x, center_y - y_offset / 2, text=score_text, fill=score_color,
                                             font=("Arial", font_size, current_font_weight))
 
                     # 第二行：选择概率
                     policy_prob = data['p']
+                    if policy_prob < 0.01:
+                        prob_color = "black"
+                    elif policy_prob < 0.10:
+                        prob_color = "blue"
+                    else:
+                        prob_color = "red"
+
                     prob_text = f"概率:{policy_prob * 100:.1f}%"
-                    self.canvas.create_text(center_x, center_y + y_offset, text=prob_text, fill="blue",
+                    self.canvas.create_text(center_x, center_y + y_offset, text=prob_text, fill=prob_color,
                                             font=("Arial", font_size, current_font_weight))
 
     def _update_status(self):
