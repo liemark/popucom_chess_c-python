@@ -3,7 +3,7 @@
 
 #include "game.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(_WIN64)
 #define API __declspec(dllexport)
 #else
 #define API
@@ -22,6 +22,10 @@ extern "C" {
 
     API void mcts_feed_results(MCTSManager* manager_handle, const float* policies, const float* values);
     API bool mcts_get_policy(MCTSManager* manager_handle, int game_idx, float* policy_output);
+
+    // 新增: 一个可以同时获取Q值和策略的函数，专用于分析
+    API bool mcts_get_analysis_data(MCTSManager* manager, int game_idx, float* q_values_output, float* policy_output);
+
     API void mcts_make_move(MCTSManager* manager_handle, int game_idx, int move);
     API bool mcts_is_game_over(MCTSManager* manager_handle, int game_idx);
     API float mcts_get_final_value(MCTSManager* manager_handle, int game_idx, int player_at_step);
