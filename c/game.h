@@ -4,14 +4,14 @@
 #include <cstdint>   // For uint64_t
 #include <stdbool.h> // For bool type in C-compatible headers
 
-// --- API ºê¶¨Òå£¬ÓÃÓÚµ¼³öº¯Êý ---
+// --- API å®å®šä¹‰ï¼Œç”¨äºŽå¯¼å‡ºå‡½æ•° ---
 #if defined(_WIN32) || defined(_WIN64)
 #define API __declspec(dllexport)
 #else
 #define API
 #endif
 
-// --- ½á¹¹Ìå¶¨Òå ---
+// --- ç»“æž„ä½“å®šä¹‰ ---
 typedef struct {
     uint64_t parts[2];
 } Bitboards;
@@ -23,7 +23,7 @@ typedef struct {
     int moves_left[2];
 } Board;
 
-// --- ³£Á¿ºÍÃ¶¾Ù¶¨Òå ---
+// --- å¸¸é‡å’Œæžšä¸¾å®šä¹‰ ---
 #define BOARD_WIDTH 9
 #define BOARD_HEIGHT 9
 #define BOARD_SQUARES (BOARD_WIDTH * BOARD_HEIGHT) // 81
@@ -32,23 +32,23 @@ typedef struct {
 enum Player { BLACK = 0, WHITE = 1 };
 enum GameResult { IN_PROGRESS = -1, DRAW = 0, BLACK_WIN = 1, WHITE_WIN = 2 };
 
-// --- ºê¶¨Òå (¹©C++ÄÚ²¿¸ßÐ§Ê¹ÓÃ) ---
+// --- å®å®šä¹‰ (ä¾›C++å†…éƒ¨é«˜æ•ˆä½¿ç”¨) ---
 #define get_row(sq) ((sq) / BOARD_WIDTH)
 #define get_col(sq) ((sq) % BOARD_WIDTH)
 #define get_sq(r, c) ((r) * BOARD_WIDTH + (c))
 #define is_valid(r, c) ((r) >= 0 && (r) < BOARD_HEIGHT && (c) >= 0 && (c) < BOARD_WIDTH)
 
-// Í³Ò»ºêÃû³Æ
+// ç»Ÿä¸€å®åç§°
 #define GET_BIT(bb, sq) (((sq) >= 0 && (sq) < BOARD_SQUARES) ? (((bb).parts[(sq) / 64] >> ((sq) % 64)) & 1ULL) : 0)
 #define SET_BIT(bb, sq) do { if ((sq) >= 0 && (sq) < BOARD_SQUARES) (bb).parts[(sq) / 64] |= (1ULL << ((sq) % 64)); } while(0)
 #define CLEAR_BIT(bb, sq) do { if ((sq) >= 0 && (sq) < BOARD_SQUARES) (bb).parts[(sq) / 64] &= ~(1ULL << ((sq) % 64)); } while(0)
 
-// extern "C" È·±£ C++ ±àÒëÆ÷ÒÔ C ÓïÑÔµÄ·½Ê½µ¼³öÕâÐ©º¯Êý
+// extern "C" ç¡®ä¿ C++ ç¼–è¯‘å™¨ä»¥ C è¯­è¨€çš„æ–¹å¼å¯¼å‡ºè¿™äº›å‡½æ•°
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-    // --- º¯ÊýÉùÃ÷ ---
+    // --- å‡½æ•°å£°æ˜Ž ---
     API void init_board(Board* board);
     API void copy_board(const Board* src, Board* dest);
     API void print_board(const Board* board);
