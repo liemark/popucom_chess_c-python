@@ -1,7 +1,38 @@
 #ifndef PUCT_H
 #define PUCT_H
 
-#include "game.h"
+#include <vector>
+#include "game.h" // 包含游戏逻辑的头文件
+
+// 使用现代 C++ 来管理 MCTS 树结构，这比原始指针更安全
+// 但API接口仍然是 C 风格的，以便 Python ctypes 可以轻松调用
+
+// --- 内部数据结构 (使用现代C++) ---
+// 这些结构体的完整定义放在头文件中，以避免定义冲突
+struct MCTSNode {
+    MCTSNode* parent;
+    std::vector<MCTSNode*> children;
+    int move;
+    int visit_count;
+    double total_action_value;
+    float prior_probability;
+};
+
+struct MCTSTree {
+    Board board;
+    MCTSNode* root;
+    bool active;
+    int simulations_done;
+};
+
+struct MCTSManager {
+    int num_games;
+    std::vector<MCTSTree*> games;
+    std::vector<MCTSNode*> request_nodes;
+    std::vector<Board> request_board_buffer;
+    std::vector<bool> is_root_request_buffer;
+};
+
 
 #if defined(_WIN32) || defined(_WIN64)
 #define API __declspec(dllexport)
@@ -13,7 +44,8 @@
 extern "C" {
 #endif
 
-    typedef struct MCTSManager MCTSManager;
+    // API 函数现在使用一个不透明的指针类型，隐藏了C++的实现细节
+    // 这使得C++端可以自由使用 std::vector 等特性，而C端/Python端无需关心
 
     API MCTSManager* create_mcts_manager(int num_parallel_games);
     API void destroy_mcts_manager(MCTSManager* manager_handle);
@@ -22,8 +54,6 @@ extern "C" {
 
     API void mcts_feed_results(MCTSManager* manager_handle, const float* policies, const float* values);
     API bool mcts_get_policy(MCTSManager* manager_handle, int game_idx, float* policy_output);
-
-    // 新增: 一个可以同时获取Q值和策略的函数，专用于分析
     API bool mcts_get_analysis_data(MCTSManager* manager, int game_idx, float* q_values_output, float* policy_output);
 
     API void mcts_make_move(MCTSManager* manager_handle, int game_idx, int move);
