@@ -8,7 +8,7 @@
 #include <numeric>
 #include <stdexcept>
 
-// ĞŞ¸´: °üº¬ÕıÈ·µÄÆ½Ì¨ÌØ¶¨Í·ÎÄ¼ş
+// ä¿®å¤: åŒ…å«æ­£ç¡®çš„å¹³å°ç‰¹å®šå¤´æ–‡ä»¶
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -18,11 +18,14 @@
 #include "puct.h"
 #include "game.h"
 
-#define C_PUCT 1.5f
-#define DIRICHLET_ALPHA 0.03f
+// C_PUCT 1
+// DIRICHLET_ALPHA 0.0034
+
+#define C_PUCT 1.0f
+#define DIRICHLET_ALPHA 0.0034f
 #define DIRICHLET_EPSILON 0.25f
 
-// --- ÄÚ²¿Êı¾İ½á¹¹ (Ê¹ÓÃÏÖ´úC++) ---
+// --- å†…éƒ¨æ•°æ®ç»“æ„ (ä½¿ç”¨ç°ä»£C++) ---
 struct MCTSNode {
     MCTSNode* parent;
     std::vector<MCTSNode*> children;
@@ -48,7 +51,7 @@ struct MCTSManager {
 };
 
 
-// --- ÄÚ²¿¸¨Öúº¯ÊıÉùÃ÷ ---
+// --- å†…éƒ¨è¾…åŠ©å‡½æ•°å£°æ˜ ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p);
 static void free_node_recursive(MCTSNode* node);
 static MCTSNode* select_child(MCTSNode* node);
@@ -60,9 +63,9 @@ static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, i
 
 extern "C" {
 
-    // --- API º¯ÊıÊµÏÖ ---
+    // --- API å‡½æ•°å®ç° ---
     API MCTSManager* create_mcts_manager(int num_parallel_games) {
-        // ĞŞ¸´: ÕıÈ·Ê¹ÓÃÆ½Ì¨ÌØ¶¨µÄ getpid º¯Êı
+        // ä¿®å¤: æ­£ç¡®ä½¿ç”¨å¹³å°ç‰¹å®šçš„ getpid å‡½æ•°
 #if defined(_WIN32) || defined(_WIN64)
         srand(static_cast<unsigned int>(time(nullptr)) ^ GetCurrentProcessId());
 #else
@@ -259,7 +262,7 @@ extern "C" {
 
 } // extern "C"
 
-// --- ÄÚ²¿¸¨Öúº¯ÊıµÄ¾ßÌåÊµÏÖ (Ê¹ÓÃÏÖ´úC++) ---
+// --- å†…éƒ¨è¾…åŠ©å‡½æ•°çš„å…·ä½“å®ç° (ä½¿ç”¨ç°ä»£C++) ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p) {
     try {
         MCTSNode* node = new MCTSNode();
