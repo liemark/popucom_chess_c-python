@@ -19,7 +19,7 @@
 #endif
 
 
-#define C_PUCT 0.15f
+#define C_PUCT 0.05f
 
 // --- 内部辅助函数声明 ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p);
