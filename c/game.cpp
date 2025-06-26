@@ -4,7 +4,7 @@
 
 extern "C" {
 
-    // --- pop_count º¯ÊıÊµÏÖ ---
+    // --- pop_count å‡½æ•°å®ç° ---
     int pop_count(const Bitboards* bb) {
         if (!bb) return 0;
         int count = 0;
@@ -22,13 +22,13 @@ extern "C" {
         return count;
     }
 
-    // --- is_bit_set º¯ÊıµÄÊµÏÖ ---
+    // --- is_bit_set å‡½æ•°çš„å®ç° ---
     bool is_bit_set(const Bitboards* bb, int sq) {
         if (!bb) return false;
         return GET_BIT(*bb, sq) != 0;
     }
 
-    // --- ¹«¹²º¯ÊıÊµÏÖ ---
+    // --- å…¬å…±å‡½æ•°å®ç° ---
 
     void init_board(Board* board) {
         if (!board) return;
@@ -129,7 +129,7 @@ extern "C" {
         SET_BIT(board->pieces[player], square);
 
         Bitboards elimination_mask = { 0, 0 };
-        Bitboards coloring_lines_mask = { 0, 0 }; // ÓÃÀ´±ê¼ÇÄÄĞ©·½Ïò(0-3)·¢ÉúÁËÏû³ı
+        Bitboards coloring_lines_mask = { 0, 0 }; // ç”¨æ¥æ ‡è®°å“ªäº›æ–¹å‘(0-3)å‘ç”Ÿäº†æ¶ˆé™¤
         bool elimination_occurred = false;
 
         int dr[] = { 0, 1, -1, 1 };
@@ -158,7 +158,7 @@ extern "C" {
                 elimination_occurred = true;
                 elimination_mask.parts[0] |= current_line.parts[0];
                 elimination_mask.parts[1] |= current_line.parts[1];
-                SET_BIT(coloring_lines_mask, i); // ±ê¼ÇÕâ¸ö·½Ïò
+                SET_BIT(coloring_lines_mask, i); // æ ‡è®°è¿™ä¸ªæ–¹å‘
             }
         }
 
@@ -172,7 +172,7 @@ extern "C" {
 
             for (int i = 0; i < 4; ++i) {
                 if (is_bit_set(&coloring_lines_mask, i)) {
-                    // ÕıÏòÉäÏß
+                    // æ­£å‘å°„çº¿
                     for (int k = 1; k < BOARD_WIDTH; ++k) {
                         int r = get_row(square) + k * dr[i];
                         int c = get_col(square) + k * dc[i];
@@ -181,7 +181,7 @@ extern "C" {
                         if (is_bit_set(&board->pieces[opponent], ray_sq)) break;
                         SET_BIT(final_color_mask, ray_sq);
                     }
-                    // ·´ÏòÉäÏß
+                    // åå‘å°„çº¿
                     for (int k = 1; k < BOARD_WIDTH; ++k) {
                         int r = get_row(square) - k * dr[i];
                         int c = get_col(square) - k * dc[i];
