@@ -1,0 +1,372 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <cfloat>
+#include <numeric>
+#include <stdexcept>
+
+// 修复: 包含正确的平台特定头文件
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+#include "puct.h"
+#include "game.h"
+
+#define C_PUCT 1.5f
+#define DIRICHLET_ALPHA 0.03f
+#define DIRICHLET_EPSILON 0.25f
+
+// --- 内部数据结构 (使用现代C++) ---
+struct MCTSNode {
+    MCTSNode* parent;
+    std::vector<MCTSNode*> children;
+    int move;
+    int visit_count;
+    double total_action_value;
+    float prior_probability;
+};
+
+struct MCTSTree {
+    Board board;
+    MCTSNode* root;
+    bool active;
+    int simulations_done;
+};
+
+struct MCTSManager {
+    int num_games;
+    std::vector<MCTSTree*> games;
+    std::vector<MCTSNode*> request_nodes;
+    std::vector<Board> request_board_buffer;
+    std::vector<bool> is_root_request_buffer;
+};
+
+
+// --- 内部辅助函数声明 ---
+static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p);
+static void free_node_recursive(MCTSNode* node);
+static MCTSNode* select_child(MCTSNode* node);
+static void expand_node(MCTSNode* node, const Board* board_state, const float* policy);
+static void backpropagate(MCTSNode* node, float value);
+static float rand_gamma(float alpha);
+static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, int player_at_step);
+
+
+extern "C" {
+
+    // --- API 函数实现 ---
+    API MCTSManager* create_mcts_manager(int num_parallel_games) {
+        // 修复: 正确使用平台特定的 getpid 函数
+#if defined(_WIN32) || defined(_WIN64)
+        srand(static_cast<unsigned int>(time(nullptr)) ^ GetCurrentProcessId());
+#else
+        srand(static_cast<unsigned int>(time(nullptr)) ^ getpid());
+#endif
+
+        try {
+            MCTSManager* manager = new MCTSManager();
+            manager->num_games = num_parallel_games;
+            manager->games.resize(num_parallel_games, nullptr);
+            for (int i = 0; i < num_parallel_games; ++i) {
+                manager->games[i] = new MCTSTree();
+                init_board(&manager->games[i]->board);
+                manager->games[i]->root = create_node(nullptr, -1, 1.0f);
+                manager->games[i]->active = true;
+                manager->games[i]->simulations_done = 0;
+            }
+            return manager;
+        }
+        catch (const std::bad_alloc&) {
+            return nullptr;
+        }
+    }
+
+    API void destroy_mcts_manager(MCTSManager* manager) {
+        if (!manager) return;
+        for (MCTSTree* tree : manager->games) {
+            if (tree) {
+                free_node_recursive(tree->root);
+                delete tree;
+            }
+        }
+        delete manager;
+    }
+
+    API int mcts_run_simulations_and_get_requests(MCTSManager* manager, Board* request_board_output, int* request_game_indices_ptr, int max_requests) {
+        if (!manager) return 0;
+        manager->request_nodes.clear();
+        manager->request_board_buffer.clear();
+        manager->is_root_request_buffer.clear();
+
+        for (int i = 0; i < manager->num_games; ++i) {
+            if (!manager->games[i] || !manager->games[i]->active) continue;
+            if (manager->request_nodes.size() >= static_cast<size_t>(max_requests)) break;
+
+            MCTSTree* tree = manager->games[i];
+            MCTSNode* node = tree->root;
+            Board current_sim_board;
+            copy_board(&tree->board, &current_sim_board);
+
+            while (node && !node->children.empty()) {
+                MCTSNode* next_node = select_child(node);
+                if (!next_node) break;
+                node = next_node;
+                make_move(&current_sim_board, node->move);
+            }
+
+            if (get_game_result(&current_sim_board) != IN_PROGRESS) {
+                float value = mcts_internal_get_final_value(manager, i, current_sim_board.current_player);
+                if (node) backpropagate(node, -value);
+                tree->simulations_done++;
+            }
+            else {
+                if (node) {
+                    manager->is_root_request_buffer.push_back(node == tree->root);
+                    manager->request_nodes.push_back(node);
+                    manager->request_board_buffer.push_back(current_sim_board);
+                    request_game_indices_ptr[manager->request_board_buffer.size() - 1] = i;
+                }
+            }
+        }
+        for (size_t i = 0; i < manager->request_board_buffer.size(); ++i) {
+            if (request_board_output) {
+                memcpy(&request_board_output[i], &manager->request_board_buffer[i], sizeof(Board));
+            }
+        }
+        return static_cast<int>(manager->request_nodes.size());
+    }
+
+
+    API void mcts_feed_results(MCTSManager* manager, const float* policies, const float* values) {
+        if (!manager) return;
+        for (size_t i = 0; i < manager->request_nodes.size(); ++i) {
+            MCTSNode* node = manager->request_nodes[i];
+            if (!node) continue;
+
+            const float* original_policy = policies + i * (BOARD_SQUARES);
+            float value_for_node = values[i];
+
+            float final_policy[BOARD_SQUARES];
+            memcpy(final_policy, original_policy, sizeof(float) * BOARD_SQUARES);
+
+            const Board* board_state = &manager->request_board_buffer[i];
+
+            if (manager->is_root_request_buffer[i]) {
+                Bitboards legal_moves = get_legal_moves(board_state);
+                int num_legal_moves = pop_count(&legal_moves);
+                if (num_legal_moves > 1) {
+                    std::vector<float> noise(num_legal_moves);
+                    float noise_sum = 0.0f;
+                    for (int k = 0; k < num_legal_moves; ++k) {
+                        noise[k] = rand_gamma(DIRICHLET_ALPHA);
+                        noise_sum += noise[k];
+                    }
+                    if (noise_sum > 1e-6f) {
+                        for (int k = 0; k < num_legal_moves; ++k) {
+                            noise[k] /= noise_sum;
+                        }
+                    }
+                    int noise_idx = 0;
+                    for (int move_idx = 0; move_idx < BOARD_SQUARES; ++move_idx) {
+                        if (is_bit_set(&legal_moves, move_idx)) {
+                            if (noise_idx < num_legal_moves) {
+                                final_policy[move_idx] = final_policy[move_idx] * (1.0f - DIRICHLET_EPSILON) + noise[noise_idx++] * DIRICHLET_EPSILON;
+                            }
+                        }
+                    }
+                }
+            }
+            expand_node(node, board_state, final_policy);
+            backpropagate(node, value_for_node);
+
+            MCTSNode* root_finder = node;
+            while (root_finder && root_finder->parent) root_finder = root_finder->parent;
+
+            for (int j = 0; j < manager->num_games; ++j) {
+                if (manager->games[j] && manager->games[j]->root == root_finder) {
+                    manager->games[j]->simulations_done++;
+                    break;
+                }
+            }
+        }
+    }
+
+    API bool mcts_get_policy(MCTSManager* manager, int game_idx, float* policy_output) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx] || !manager->games[game_idx]->active) return false;
+        MCTSTree* tree = manager->games[game_idx];
+        memset(policy_output, 0, sizeof(float) * BOARD_SQUARES);
+
+        if (!tree->root || tree->root->children.empty()) return true;
+
+        float total_visits = 0;
+        for (const auto& child : tree->root->children) {
+            if (child) total_visits += child->visit_count;
+        }
+        if (total_visits > 0) {
+            for (const auto& child : tree->root->children) {
+                if (child) policy_output[child->move] = (float)child->visit_count / total_visits;
+            }
+        }
+        return true;
+    }
+
+    API void mcts_make_move(MCTSManager* manager, int game_idx, int move) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return;
+        MCTSTree* tree = manager->games[game_idx];
+        MCTSNode* new_root = nullptr;
+
+        if (tree->root) {
+            for (auto& child : tree->root->children) {
+                if (child && child->move == move) {
+                    new_root = child;
+                    child = nullptr;
+                    break;
+                }
+            }
+            free_node_recursive(tree->root);
+        }
+        tree->root = new_root ? new_root : create_node(nullptr, -1, 1.0f);
+        if (tree->root) tree->root->parent = nullptr;
+
+        make_move(&tree->board, move);
+        tree->simulations_done = 0;
+    }
+
+    API bool mcts_is_game_over(MCTSManager* manager, int game_idx) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return true;
+        return get_game_result(&manager->games[game_idx]->board) != IN_PROGRESS;
+    }
+
+    API float mcts_get_final_value(MCTSManager* manager, int game_idx, int player_at_step) {
+        return mcts_internal_get_final_value(manager, game_idx, player_at_step);
+    }
+
+    API const Board* mcts_get_board_state(MCTSManager* manager, int game_idx) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return nullptr;
+        return &manager->games[game_idx]->board;
+    }
+
+    API int mcts_get_simulations_done(MCTSManager* manager, int game_idx) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return -1;
+        return manager->games[game_idx]->simulations_done;
+    }
+
+} // extern "C"
+
+// --- 内部辅助函数的具体实现 (使用现代C++) ---
+static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p) {
+    try {
+        MCTSNode* node = new MCTSNode();
+        node->parent = parent;
+        node->move = move;
+        node->prior_probability = prior_p;
+        node->visit_count = 0;
+        node->total_action_value = 0.0;
+        return node;
+    }
+    catch (const std::bad_alloc&) {
+        return nullptr;
+    }
+}
+
+static void free_node_recursive(MCTSNode* node) {
+    if (!node) return;
+    for (MCTSNode* child : node->children) {
+        free_node_recursive(child);
+    }
+    delete node;
+}
+
+static double calculate_puct_score(const MCTSNode* node) {
+    if (node == nullptr || node->parent == nullptr || node->parent->visit_count == 0) return 1e9;
+    double q_value = (node->visit_count == 0) ? 0.0 : node->total_action_value / node->visit_count;
+    double u_value = C_PUCT * node->prior_probability * sqrt(static_cast<double>(node->parent->visit_count)) / (1.0 + node->visit_count);
+    return -q_value + u_value;
+}
+
+
+static MCTSNode* select_child(MCTSNode* node) {
+    if (node == nullptr || node->children.empty()) return nullptr;
+    MCTSNode* best_child = nullptr;
+    double max_score = -DBL_MAX;
+    for (MCTSNode* child : node->children) {
+        if (!child) continue;
+        double score = calculate_puct_score(child);
+        if (score > max_score) {
+            max_score = score;
+            best_child = child;
+        }
+    }
+    return best_child;
+}
+
+static void expand_node(MCTSNode* node, const Board* board_state, const float* policy) {
+    if (!node || !board_state || !policy || !node->children.empty()) return;
+
+    Bitboards legal_moves = get_legal_moves(board_state);
+
+    float policy_sum = 0.0f;
+    for (int i = 0; i < BOARD_SQUARES; i++) {
+        if (GET_BIT(legal_moves, i)) {
+            policy_sum += policy[i];
+        }
+    }
+    if (policy_sum < 1e-6f) policy_sum = 1.0f;
+
+    for (int i = 0; i < BOARD_SQUARES; i++) {
+        if (GET_BIT(legal_moves, i)) {
+            MCTSNode* new_child = create_node(node, i, policy[i] / policy_sum);
+            if (new_child) node->children.push_back(new_child);
+        }
+    }
+}
+
+static void backpropagate(MCTSNode* node, float value) {
+    while (node != nullptr) {
+        node->visit_count++;
+        node->total_action_value += value;
+        value = -value;
+        node = node->parent;
+    }
+}
+
+static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, int player_at_step) {
+    if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return 0.0f;
+    enum GameResult result = get_game_result(&manager->games[game_idx]->board);
+
+    if (result == DRAW) return 0.0f;
+    if (result == BLACK_WIN) return (player_at_step == BLACK) ? 1.0f : -1.0f;
+    if (result == WHITE_WIN) return (player_at_step == WHITE) ? 1.0f : -1.0f;
+    return 0.0f;
+}
+
+static float rand_uniform_float() {
+    return (static_cast<float>(rand()) + 1.0f) / (static_cast<float>(RAND_MAX) + 2.0f);
+}
+
+static float rand_gamma(float alpha) {
+    if (alpha >= 1.0f) {
+        float d = alpha - 1.0f / 3.0f;
+        float c = 1.0f / sqrtf(9.0f * d);
+        float v, x;
+        while (true) {
+            do {
+                x = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f;
+                v = 1.0f + c * x;
+            } while (v <= 0.0f);
+            v = v * v * v;
+            float u = rand_uniform_float();
+            if (u < 1.0f - 0.0331f * (x * x) * (x * x)) return d * v;
+            if (logf(u) < 0.5f * x * x + d * (1.0f - v + logf(v))) return d * v;
+        }
+    }
+    else {
+        return rand_gamma(alpha + 1.0f) * powf(rand_uniform_float(), 1.0f / alpha);
+    }
+}
