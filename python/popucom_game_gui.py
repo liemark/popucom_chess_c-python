@@ -40,7 +40,6 @@ def setup_c_library():
 
     c_lib = ctypes.CDLL(os.path.abspath(lib_name))
 
-    # --- MCTS (puct.h) 函数接口 ---
     c_lib.create_mcts_manager.argtypes = [ctypes.c_int]
     c_lib.create_mcts_manager.restype = ctypes.c_void_p
     c_lib.destroy_mcts_manager.argtypes = [ctypes.c_void_p]
@@ -50,6 +49,11 @@ def setup_c_library():
     c_lib.mcts_feed_results.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
     c_lib.mcts_get_policy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
     c_lib.mcts_get_policy.restype = ctypes.c_bool
+
+    c_lib.mcts_get_analysis_data.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float),
+                                             ctypes.POINTER(ctypes.c_float)]
+    c_lib.mcts_get_analysis_data.restype = ctypes.c_bool
+
     c_lib.mcts_make_move.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     c_lib.mcts_is_game_over.argtypes = [ctypes.c_void_p, ctypes.c_int]
     c_lib.mcts_is_game_over.restype = ctypes.c_bool
@@ -59,8 +63,6 @@ def setup_c_library():
     c_lib.mcts_get_board_state.restype = ctypes.POINTER(Board)
     c_lib.mcts_get_simulations_done.argtypes = [ctypes.c_void_p, ctypes.c_int]
     c_lib.mcts_get_simulations_done.restype = ctypes.c_int
-
-    # --- 游戏逻辑 (game.h) 函数接口 ---
     c_lib.get_legal_moves.argtypes = [ctypes.POINTER(Board)]
     c_lib.get_legal_moves.restype = Bitboards
     c_lib.get_game_result.argtypes = [ctypes.POINTER(Board)]
@@ -86,6 +88,7 @@ BLACK_PAINTED_FLOOR_COLOR = "#FFDAB9"
 WHITE_PAINTED_FLOOR_COLOR = "#90EE90"
 BLACK_PIECE_COLOR = "#FF0000"
 WHITE_PIECE_COLOR = "#008000"
+BEST_MOVE_HIGHLIGHT_COLOR = "#FFD700"  # Gold
 
 
 # --- GUI 主类 ---
@@ -107,7 +110,7 @@ class PomPomGameGUI:
         self.human_player_choice = StringVar(value="human_black")
         self.human_player = BLACK_PLAYER
         self.move_history = []
-        self.analysis_policy = None
+        self.analysis_results = {}
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.ai_model = PomPomNN().to(self.device)
@@ -118,7 +121,7 @@ class PomPomGameGUI:
         self._reset_and_start_new_game()
 
     def _setup_gui(self):
-        self.cell_size = 60
+        self.cell_size = 100
         self.canvas = tk.Canvas(self.master, width=self.cell_size * BOARD_SIZE, height=self.cell_size * BOARD_SIZE,
                                 bg=BOARD_BACKGROUND_COLOR)
         self.canvas.pack(pady=10)
@@ -128,8 +131,7 @@ class PomPomGameGUI:
         self.status_label = Label(self.master, text="请开始新游戏", font=("Arial", 14, "bold"))
         self.status_label.pack(pady=(10, 0))
 
-        # 新增: 用于显示步数和涂色数量的信息标签
-        self.info_label = Label(self.master, text="", font=("Arial", 10))
+        self.info_label = Label(self.master, text="", font=("Arial", 10), justify=tk.CENTER)
         self.info_label.pack(pady=(0, 10))
 
         control_frame = Frame(self.master)
@@ -187,7 +189,7 @@ class PomPomGameGUI:
         self.mcts_manager = self.c_lib.create_mcts_manager(1)
         self.game_running = True
         self.move_history.clear()
-        self.analysis_policy = None
+        self.analysis_results.clear()
 
         self.human_player = BLACK_PLAYER if self.human_player_choice.get() == "human_black" else WHITE_PLAYER
 
@@ -256,27 +258,52 @@ class PomPomGameGUI:
                     self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius,
                                             fill=piece_color)
 
-        if self.analysis_policy is not None:
-            max_prob = np.max(self.analysis_policy) if np.sum(self.analysis_policy) > 0 else 0
-            for r in range(BOARD_SIZE):
-                for c in range(BOARD_SIZE):
-                    prob = self.analysis_policy[r * BOARD_SIZE + c]
-                    if prob > 0.001:
-                        center_x = c * self.cell_size + self.cell_size / 2
-                        center_y = r * self.cell_size + self.cell_size / 2
-                        text_color = "darkgreen" if prob >= max_prob * 0.9 else "blue"
-                        font_size = max(8, int(self.cell_size / 6))
-                        self.canvas.create_text(center_x, center_y, text=f"{prob:.2f}", fill=text_color,
-                                                font=("Arial", font_size, "bold"))
+        # 绘制分析结果
+        if self.analysis_results:
+            # 1. 按选择概率对候选着法进行排序
+            sorted_moves = sorted(self.analysis_results.items(), key=lambda item: item[1]['p'], reverse=True)
+
+            # 2. 应用您建议的字体大小
+            font_size = max(8, int(self.cell_size / 16))
+            y_offset = self.cell_size / 4
+
+            # 3. 绘制分析信息，并为最佳着法添加视觉效果
+            for i, (sq, data) in enumerate(sorted_moves):
+                if data['p'] > 0.001:
+                    r, c = sq // BOARD_SIZE, sq % BOARD_SIZE
+                    center_x = c * self.cell_size + self.cell_size / 2
+                    center_y = r * self.cell_size + self.cell_size / 2
+
+                    # 增强最佳方案的视觉效果
+                    if i == 0:  # 如果是最佳着法
+                        x1, y1 = c * self.cell_size, r * self.cell_size
+                        x2, y2 = x1 + self.cell_size, y1 + self.cell_size
+                        # 绘制一个金色的高亮边框
+                        self.canvas.create_rectangle(x1 + 2, y1 + 2, x2 - 2, y2 - 2, outline=BEST_MOVE_HIGHLIGHT_COLOR,
+                                                     width=3)
+                        current_font_weight = "bold"
+                    else:
+                        current_font_weight = "normal"
+
+                    # 第一行：预测净胜分
+                    q_value = data['q']
+                    score_text = f"胜分:{q_value * BOARD_SQUARES:.1f}"
+                    score_color = "darkgreen" if q_value >= 0 else "darkred"
+                    self.canvas.create_text(center_x, center_y - y_offset / 2, text=score_text, fill=score_color,
+                                            font=("Arial", font_size, current_font_weight))
+
+                    # 第二行：选择概率
+                    policy_prob = data['p']
+                    prob_text = f"概率:{policy_prob * 100:.1f}%"
+                    self.canvas.create_text(center_x, center_y + y_offset, text=prob_text, fill="blue",
+                                            font=("Arial", font_size, current_font_weight))
 
     def _update_status(self):
         board_ptr = self._get_board_state()
         if not board_ptr: return
         board = board_ptr.contents
-
         result = self.c_lib.get_game_result(board_ptr)
 
-        # 更新信息标签
         black_moves_left = board.moves_left[BLACK_PLAYER]
         white_moves_left = board.moves_left[WHITE_PLAYER]
         black_tiles = self.c_lib.pop_count(ctypes.byref(board.tiles[BLACK_PLAYER]))
@@ -332,7 +359,7 @@ class PomPomGameGUI:
             messagebox.showwarning("非法落子", "不能在此处落子。")
 
     def _make_move(self, move):
-        self.analysis_policy = None
+        self.analysis_results.clear()
         self.move_history.append(move)
         self.c_lib.mcts_make_move(self.mcts_manager, 0, move)
         self._start_game_flow()
@@ -429,6 +456,7 @@ class PomPomGameGUI:
             board_buffer = (Board * 1)()
             request_indices = (ctypes.c_int * 1)()
             for _ in range(sims):
+                if not self.game_running: break
                 num_reqs = self.c_lib.mcts_run_simulations_and_get_requests(temp_manager, board_buffer, request_indices,
                                                                             1)
                 if num_reqs > 0:
@@ -441,11 +469,18 @@ class PomPomGameGUI:
                     self.c_lib.mcts_feed_results(temp_manager, policy.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                                                  value_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
-            policy_buffer = (ctypes.c_float * BOARD_SQUARES)()
-            self.c_lib.mcts_get_policy(temp_manager, 0, policy_buffer)
-            self.analysis_policy = np.ctypeslib.as_array(policy_buffer).copy()
-            self.c_lib.destroy_mcts_manager(temp_manager)
+            q_values_np = np.zeros(BOARD_SQUARES, dtype=np.float32)
+            policy_np = np.zeros(BOARD_SQUARES, dtype=np.float32)
+            self.c_lib.mcts_get_analysis_data(temp_manager, 0,
+                                              q_values_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                                              policy_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
+            self.analysis_results.clear()
+            for i in range(BOARD_SQUARES):
+                if policy_np[i] > 0:
+                    self.analysis_results[i] = {'q': q_values_np[i], 'p': policy_np[i]}
+
+            self.c_lib.destroy_mcts_manager(temp_manager)
             self.master.after(0, self._finish_analysis)
 
         threading.Thread(target=analysis_worker).start()
@@ -460,7 +495,6 @@ class PomPomGameGUI:
         self._update_status()
 
     def _board_to_tensor(self, board_c: Board) -> np.ndarray:
-        # 这个函数的逻辑必须与自对弈和训练脚本中的完全一致
         tensor = np.zeros((11, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         p, o = board_c.current_player, 1 - board_c.current_player
 
@@ -476,8 +510,8 @@ class PomPomGameGUI:
         tensor[3, :, :] = get_plane(board_c.tiles[o])
         tensor[4, :, :] = 1. if p == 0 else 0.
         tensor[5, :, :] = 1. if p == 1 else 0.
-        tensor[6, :, :] = float(board_c.moves_left[0]) / 25.0  # 使用新的 TOTAL_MOVES
-        tensor[7, :, :] = float(board_c.moves_left[1]) / 25.0  # 使用新的 TOTAL_MOVES
+        tensor[6, :, :] = float(board_c.moves_left[0]) / 25.0
+        tensor[7, :, :] = float(board_c.moves_left[1]) / 25.0
         tensor[8, :, :] = float(self.c_lib.pop_count(ctypes.byref(board_c.tiles[0]))) / BOARD_SQUARES
         tensor[9, :, :] = float(self.c_lib.pop_count(ctypes.byref(board_c.tiles[1]))) / BOARD_SQUARES
 
