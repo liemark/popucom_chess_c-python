@@ -8,7 +8,7 @@
 #include <numeric>
 #include <stdexcept>
 
-// 修复: 包含正确的平台特定头文件
+// 包含正确的平台特定头文件
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -17,9 +17,6 @@
 
 #include "puct.h"
 #include "game.h"
-
-// C_PUCT 1
-// DIRICHLET_ALPHA 0.0034
 
 #define C_PUCT 1.0f
 #define DIRICHLET_ALPHA 0.0034f
@@ -65,7 +62,6 @@ extern "C" {
 
     // --- API 函数实现 ---
     API MCTSManager* create_mcts_manager(int num_parallel_games) {
-        // 修复: 正确使用平台特定的 getpid 函数
 #if defined(_WIN32) || defined(_WIN64)
         srand(static_cast<unsigned int>(time(nullptr)) ^ GetCurrentProcessId());
 #else
@@ -219,6 +215,44 @@ extern "C" {
         return true;
     }
 
+    // 新增: 一个可以同时获取Q值和策略的函数，专用于分析
+    API bool mcts_get_analysis_data(MCTSManager* manager, int game_idx, float* q_values_output, float* policy_output) {
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx] || !manager->games[game_idx]->active) {
+            return false;
+        }
+        MCTSTree* tree = manager->games[game_idx];
+        memset(q_values_output, 0, sizeof(float) * BOARD_SQUARES);
+        memset(policy_output, 0, sizeof(float) * BOARD_SQUARES);
+
+        if (!tree->root || tree->root->children.empty()) {
+            return true; // 没有数据可供分析，但并非错误
+        }
+
+        float total_visits = 0;
+        for (const auto& child : tree->root->children) {
+            if (child) {
+                total_visits += child->visit_count;
+            }
+        }
+
+        if (total_visits > 0) {
+            for (const auto& child : tree->root->children) {
+                if (child) {
+                    int move = child->move;
+                    if (move >= 0 && move < BOARD_SQUARES) {
+                        policy_output[move] = static_cast<float>(child->visit_count) / total_visits;
+                        // Q值是从子节点（即对手）的角度看的，所以我们需要取反以得到当前玩家的期望得分
+                        q_values_output[move] = (child->visit_count > 0)
+                            ? static_cast<float>(-child->total_action_value / child->visit_count)
+                            : 0.0f;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+
     API void mcts_make_move(MCTSManager* manager, int game_idx, int move) {
         if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return;
         MCTSTree* tree = manager->games[game_idx];
@@ -316,14 +350,14 @@ static void expand_node(MCTSNode* node, const Board* board_state, const float* p
 
     float policy_sum = 0.0f;
     for (int i = 0; i < BOARD_SQUARES; i++) {
-        if (GET_BIT(legal_moves, i)) {
+        if (is_bit_set(&legal_moves, i)) {
             policy_sum += policy[i];
         }
     }
     if (policy_sum < 1e-6f) policy_sum = 1.0f;
 
     for (int i = 0; i < BOARD_SQUARES; i++) {
-        if (GET_BIT(legal_moves, i)) {
+        if (is_bit_set(&legal_moves, i)) {
             MCTSNode* new_child = create_node(node, i, policy[i] / policy_sum);
             if (new_child) node->children.push_back(new_child);
         }
@@ -340,14 +374,26 @@ static void backpropagate(MCTSNode* node, float value) {
 }
 
 static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, int player_at_step) {
-    if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return 0.0f;
-    enum GameResult result = get_game_result(&manager->games[game_idx]->board);
+    if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) {
+        return 0.0f;
+    }
 
-    if (result == DRAW) return 0.0f;
-    if (result == BLACK_WIN) return (player_at_step == BLACK) ? 1.0f : -1.0f;
-    if (result == WHITE_WIN) return (player_at_step == WHITE) ? 1.0f : -1.0f;
-    return 0.0f;
+    const Board* final_board = &manager->games[game_idx]->board;
+
+    int black_tiles = pop_count(&final_board->tiles[BLACK]);
+    int white_tiles = pop_count(&final_board->tiles[WHITE]);
+
+    int score_diff;
+    if (player_at_step == BLACK) {
+        score_diff = black_tiles - white_tiles;
+    }
+    else { // player_at_step == WHITE
+        score_diff = white_tiles - black_tiles;
+    }
+
+    return static_cast<float>(score_diff) / static_cast<float>(BOARD_SQUARES);
 }
+
 
 static float rand_uniform_float() {
     return (static_cast<float>(rand()) + 1.0f) / (static_cast<float>(RAND_MAX) + 2.0f);
