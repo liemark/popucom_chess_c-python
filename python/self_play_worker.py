@@ -1,0 +1,251 @@
+import ctypes
+import os
+import platform
+import time
+import pickle
+import numpy as np
+import torch
+
+# --- 导入我们自己的模块 ---
+from popucom_nn_model import PomPomNN, BOARD_SIZE
+from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
+
+# --- 全局配置 ---
+MCTS_SIMULATIONS = 100
+NUM_PARALLEL_GAMES = 128
+MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
+MODEL_PATH = "model.pth"
+DATA_DIR = "self_play_data"
+TOTAL_GAME_CYCLES = 6
+BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
+
+# --- 温度参数 ---
+TEMPERATURE_INITIAL = 1.0
+TEMPERATURE_DECAY_MOVES = 30
+
+
+# --- C 语言接口定义 ---
+class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
+
+
+class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
+                                           ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)]
+
+
+def setup_c_library():
+    """
+    加载 C++ 动态库并设置所有函数的参数类型 (argtypes) 和返回类型 (restype)。
+    这是与 C++ 代码签订的“合同”，必须严格匹配。
+    """
+    lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
+    if not os.path.exists(lib_name):
+        raise FileNotFoundError(f"未找到C库 '{lib_name}'。请重新编译C代码。")
+    c_lib = ctypes.CDLL(os.path.abspath(lib_name))
+
+    # --- 为每个C++函数定义接口 ---
+    c_lib.create_mcts_manager.argtypes = [ctypes.c_int]
+    c_lib.create_mcts_manager.restype = ctypes.c_void_p
+
+    c_lib.destroy_mcts_manager.argtypes = [ctypes.c_void_p]
+
+    c_lib.mcts_run_simulations_and_get_requests.argtypes = [ctypes.c_void_p, ctypes.POINTER(Board),
+                                                            ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    c_lib.mcts_run_simulations_and_get_requests.restype = ctypes.c_int
+
+    c_lib.mcts_feed_results.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
+    c_lib.mcts_feed_results.restype = None
+
+    c_lib.mcts_get_policy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
+    c_lib.mcts_get_policy.restype = ctypes.c_bool
+
+    c_lib.mcts_make_move.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+
+    c_lib.mcts_is_game_over.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    c_lib.mcts_is_game_over.restype = ctypes.c_bool
+
+    c_lib.mcts_get_final_value.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    c_lib.mcts_get_final_value.restype = ctypes.c_float
+
+    c_lib.mcts_get_board_state.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    c_lib.mcts_get_board_state.restype = ctypes.POINTER(Board)
+
+    c_lib.mcts_get_simulations_done.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    c_lib.mcts_get_simulations_done.restype = ctypes.c_int
+
+    c_lib.pop_count.argtypes = [ctypes.POINTER(Bitboards)]
+    c_lib.pop_count.restype = ctypes.c_int
+
+    return c_lib
+
+
+# 在全局范围加载一次库
+c_lib = setup_c_library()
+
+
+# --- Python 端的总指挥 ---
+class GameBatchRunner:
+    def __init__(self, model, num_games):
+        self.num_games = num_games
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device).eval()
+
+        self.mcts_manager = c_lib.create_mcts_manager(num_games)
+        self.game_histories = [[] for _ in range(num_games)]
+        self.move_counts = [0] * num_games
+        self.active_games = list(range(num_games))
+
+    def board_to_tensor(self, board_c: Board) -> np.ndarray:
+        tensor = np.zeros((NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        p, o = board_c.current_player, 1 - board_c.current_player
+
+        def get_plane(bb):
+            plane = np.zeros(BOARD_SQUARES, dtype=np.float32);
+            for i in range(BOARD_SQUARES):
+                if (bb.parts[i // 64] >> (i % 64)) & 1: plane[i] = 1.0
+            return plane.reshape((BOARD_SIZE, BOARD_SIZE))
+
+        tensor[0, :, :] = get_plane(board_c.pieces[p]);
+        tensor[1, :, :] = get_plane(board_c.pieces[o])
+        tensor[2, :, :] = get_plane(board_c.tiles[p]);
+        tensor[3, :, :] = get_plane(board_c.tiles[o])
+        tensor[4, :, :] = 1. if p == 0 else 0.;
+        tensor[5, :, :] = 1. if p == 1 else 0.
+        tensor[6, :, :] = float(board_c.moves_left[0]) / MAX_MOVES_PER_PLAYER;
+        tensor[7, :, :] = float(board_c.moves_left[1]) / MAX_MOVES_PER_PLAYER
+        tensor[8, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[0]))) / BOARD_SQUARES
+        tensor[9, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[1]))) / BOARD_SQUARES
+        all_tiles = Bitboards();
+        all_tiles.parts[0] = ~ (board_c.tiles[0].parts[0] | board_c.tiles[1].parts[0])
+        all_tiles.parts[1] = ~ (board_c.tiles[0].parts[1] | board_c.tiles[1].parts[1])
+        tensor[10, :, :] = get_plane(all_tiles)
+        return tensor
+
+    def calculate_ownership_target(self, final_board_c: Board, player_at_step: int) -> np.ndarray:
+        ownership = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+
+        def get_bit(bb, sq):
+            return (bb.parts[sq // 64] >> (sq % 64)) & 1 == 1
+
+        p_tiles = final_board_c.tiles[player_at_step]
+        o_tiles = final_board_c.tiles[1 - player_at_step]
+        for sq in range(BOARD_SQUARES):
+            r, c = sq // BOARD_SIZE, sq % BOARD_SIZE
+            if get_bit(p_tiles, sq):
+                ownership[r, c] = 1.0
+            elif get_bit(o_tiles, sq):
+                ownership[r, c] = -1.0
+        return ownership
+
+    def run(self):
+        while self.active_games:
+            board_buffer = (Board * MAX_BATCH_SIZE)()
+            request_indices = (ctypes.c_int * MAX_BATCH_SIZE)()
+
+            num_requests = c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager, board_buffer, request_indices,
+                                                                       MAX_BATCH_SIZE)
+
+            if num_requests > 0:
+                batch_tensors = [self.board_to_tensor(board) for board in board_buffer[:num_requests]]
+                input_batch = torch.from_numpy(np.array(batch_tensors)).to(self.device)
+                with torch.no_grad():
+                    policies_logits, values, _ = self.model(input_batch)
+                    policies = torch.softmax(policies_logits, dim=1).cpu().numpy()
+                    values = values.cpu().numpy().flatten()
+
+                # 【调试代码】在调用C++函数前，打印所有相关信息
+                #print("\n--- DEBUG INFO before c_lib.mcts_feed_results ---")
+                #print(f"num_requests from C++: {num_requests}")
+                #print(f"policies shape from Python: {policies.shape}, dtype: {policies.dtype}")
+                #print(f"values shape from Python: {values.shape}, dtype: {values.dtype}")
+
+                contiguous_policies = np.ascontiguousarray(policies, dtype=np.float32)
+                contiguous_values = np.ascontiguousarray(values, dtype=np.float32)
+
+                # 确认数组的内存布局是 C 连续的 (C_CONTIGUOUS)
+                #print(f"Is policies contiguous: {contiguous_policies.flags['C_CONTIGUOUS']}")
+                #print(f"Is values contiguous: {contiguous_values.flags['C_CONTIGUOUS']}")
+                #print("--- END DEBUG INFO ---\n")
+
+                # 现在，我们将处理过的、内存连续的数组指针传递给 C++ 函数。
+                c_lib.mcts_feed_results(
+                    self.mcts_manager,
+                    contiguous_policies.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    contiguous_values.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                )
+
+            policy_buffer = (ctypes.c_float * BOARD_SQUARES)()
+            for game_idx in list(self.active_games):
+                sims_done = c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx)
+
+                if sims_done >= MCTS_SIMULATIONS:
+                    c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
+                    policy_np = np.ctypeslib.as_array(policy_buffer).copy()
+
+                    board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
+                    current_player = board_state_ptr.contents.current_player
+                    state_tensor = self.board_to_tensor(board_state_ptr.contents)
+                    self.game_histories[game_idx].append((state_tensor, policy_np, current_player))
+
+                    temperature = TEMPERATURE_INITIAL if self.move_counts[game_idx] < TEMPERATURE_DECAY_MOVES else 0.0
+                    if temperature > 0:
+                        move_probs = policy_np ** (1.0 / temperature)
+                        sum_probs = np.sum(move_probs)
+                        if sum_probs > 1e-8:
+                            move_probs /= sum_probs
+                        else:
+                            move_probs = policy_np
+                    else:
+                        move_probs = np.zeros_like(policy_np)
+                        if np.sum(policy_np) > 0: move_probs[np.argmax(policy_np)] = 1.0
+
+                    if np.sum(move_probs) < 1e-8:
+                        if game_idx in self.active_games: self.active_games.remove(game_idx)
+                        continue
+
+                    move = np.random.choice(range(BOARD_SQUARES), p=move_probs)
+                    c_lib.mcts_make_move(self.mcts_manager, game_idx, int(move))
+                    self.move_counts[game_idx] += 1
+
+                    if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
+                        print(f"游戏 {game_idx} 结束。")
+                        if game_idx in self.active_games: self.active_games.remove(game_idx)
+
+        print("所有并行游戏已完成。")
+        all_training_data = []
+        for game_idx in range(self.num_games):
+            final_board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
+            if not final_board_state_ptr: continue
+            for state_tensor, policy, player_at_step in self.game_histories[game_idx]:
+                final_value = c_lib.mcts_get_final_value(self.mcts_manager, game_idx, player_at_step)
+                ownership_target = self.calculate_ownership_target(final_board_state_ptr.contents, player_at_step)
+                all_training_data.append((state_tensor, policy, final_value, ownership_target))
+
+        if all_training_data:
+            if not os.path.exists(DATA_DIR):
+                os.makedirs(DATA_DIR)
+            filename = os.path.join(DATA_DIR, f"batch_{int(time.time())}.pkl")
+            with open(filename, 'wb') as f:
+                pickle.dump(all_training_data, f)
+            print(f"批处理完成, {len(all_training_data)} 条数据已保存至 {filename}")
+
+    def __del__(self):
+        if hasattr(self, 'mcts_manager') and self.mcts_manager:
+            c_lib.destroy_mcts_manager(self.mcts_manager)
+
+
+if __name__ == "__main__":
+    print("开始批处理 MCTS 自对弈...")
+    try:
+        model = PomPomNN()
+        model.load_state_dict(torch.load(MODEL_PATH))
+        print("模型已加载。")
+    except FileNotFoundError:
+        model = PomPomNN()
+        torch.save(model.state_dict(), MODEL_PATH)
+        print("未找到模型，已创建并保存一个随机初始化的新模型。")
+
+    for i in range(TOTAL_GAME_CYCLES):
+        print(f"\n--- 开始第 {i + 1}/{TOTAL_GAME_CYCLES} 批次游戏 ---")
+        # 【修复】修正了这里的拼写错误
+        runner = GameBatchRunner(model, NUM_PARALLEL_GAMES)
+        runner.run()
