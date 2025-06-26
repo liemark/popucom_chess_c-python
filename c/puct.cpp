@@ -1,3 +1,6 @@
+#include "puct.h"
+#include "game.h"
+
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -15,38 +18,8 @@
 #include <unistd.h>
 #endif
 
-#include "puct.h"
-#include "game.h"
 
-#define C_PUCT 1.0f
-#define DIRICHLET_ALPHA 0.0034f
-#define DIRICHLET_EPSILON 0.25f
-
-// --- 内部数据结构 (使用现代C++) ---
-struct MCTSNode {
-    MCTSNode* parent;
-    std::vector<MCTSNode*> children;
-    int move;
-    int visit_count;
-    double total_action_value;
-    float prior_probability;
-};
-
-struct MCTSTree {
-    Board board;
-    MCTSNode* root;
-    bool active;
-    int simulations_done;
-};
-
-struct MCTSManager {
-    int num_games;
-    std::vector<MCTSTree*> games;
-    std::vector<MCTSNode*> request_nodes;
-    std::vector<Board> request_board_buffer;
-    std::vector<bool> is_root_request_buffer;
-};
-
+#define C_PUCT 1.5f
 
 // --- 内部辅助函数声明 ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p);
@@ -54,8 +27,7 @@ static void free_node_recursive(MCTSNode* node);
 static MCTSNode* select_child(MCTSNode* node);
 static void expand_node(MCTSNode* node, const Board* board_state, const float* policy);
 static void backpropagate(MCTSNode* node, float value);
-static float rand_gamma(float alpha);
-static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, int player_at_step);
+static float mcts_internal_get_final_value(const Board* final_board, int player_at_step);
 
 
 extern "C" {
@@ -120,8 +92,12 @@ extern "C" {
             }
 
             if (get_game_result(&current_sim_board) != IN_PROGRESS) {
-                float value = mcts_internal_get_final_value(manager, i, current_sim_board.current_player);
-                if (node) backpropagate(node, -value);
+                // 【核心修复】价值应该是从刚刚完成移动的玩家的视角来计算的
+                int player_who_moved = 1 - current_sim_board.current_player;
+                float value = mcts_internal_get_final_value(&current_sim_board, player_who_moved);
+
+                // 直接回传这个价值，backpropagate函数会处理后续的正负号翻转
+                if (node) backpropagate(node, value);
                 tree->simulations_done++;
             }
             else {
@@ -151,37 +127,9 @@ extern "C" {
             const float* original_policy = policies + i * (BOARD_SQUARES);
             float value_for_node = values[i];
 
-            float final_policy[BOARD_SQUARES];
-            memcpy(final_policy, original_policy, sizeof(float) * BOARD_SQUARES);
-
             const Board* board_state = &manager->request_board_buffer[i];
 
-            if (manager->is_root_request_buffer[i]) {
-                Bitboards legal_moves = get_legal_moves(board_state);
-                int num_legal_moves = pop_count(&legal_moves);
-                if (num_legal_moves > 1) {
-                    std::vector<float> noise(num_legal_moves);
-                    float noise_sum = 0.0f;
-                    for (int k = 0; k < num_legal_moves; ++k) {
-                        noise[k] = rand_gamma(DIRICHLET_ALPHA);
-                        noise_sum += noise[k];
-                    }
-                    if (noise_sum > 1e-6f) {
-                        for (int k = 0; k < num_legal_moves; ++k) {
-                            noise[k] /= noise_sum;
-                        }
-                    }
-                    int noise_idx = 0;
-                    for (int move_idx = 0; move_idx < BOARD_SQUARES; ++move_idx) {
-                        if (is_bit_set(&legal_moves, move_idx)) {
-                            if (noise_idx < num_legal_moves) {
-                                final_policy[move_idx] = final_policy[move_idx] * (1.0f - DIRICHLET_EPSILON) + noise[noise_idx++] * DIRICHLET_EPSILON;
-                            }
-                        }
-                    }
-                }
-            }
-            expand_node(node, board_state, final_policy);
+            expand_node(node, board_state, original_policy);
             backpropagate(node, value_for_node);
 
             MCTSNode* root_finder = node;
@@ -215,7 +163,6 @@ extern "C" {
         return true;
     }
 
-    // 新增: 一个可以同时获取Q值和策略的函数，专用于分析
     API bool mcts_get_analysis_data(MCTSManager* manager, int game_idx, float* q_values_output, float* policy_output) {
         if (!manager || game_idx >= manager->num_games || !manager->games[game_idx] || !manager->games[game_idx]->active) {
             return false;
@@ -225,14 +172,12 @@ extern "C" {
         memset(policy_output, 0, sizeof(float) * BOARD_SQUARES);
 
         if (!tree->root || tree->root->children.empty()) {
-            return true; // 没有数据可供分析，但并非错误
+            return true;
         }
 
         float total_visits = 0;
         for (const auto& child : tree->root->children) {
-            if (child) {
-                total_visits += child->visit_count;
-            }
+            if (child) total_visits += child->visit_count;
         }
 
         if (total_visits > 0) {
@@ -241,9 +186,9 @@ extern "C" {
                     int move = child->move;
                     if (move >= 0 && move < BOARD_SQUARES) {
                         policy_output[move] = static_cast<float>(child->visit_count) / total_visits;
-                        // Q值是从子节点（即对手）的角度看的，所以我们需要取反以得到当前玩家的期望得分
+                        // 【核心修复】Q值现在应该直接使用，因为backpropagate已经处理了正负号
                         q_values_output[move] = (child->visit_count > 0)
-                            ? static_cast<float>(-child->total_action_value / child->visit_count)
+                            ? static_cast<float>(child->total_action_value / child->visit_count)
                             : 0.0f;
                     }
                 }
@@ -251,7 +196,6 @@ extern "C" {
         }
         return true;
     }
-
 
     API void mcts_make_move(MCTSManager* manager, int game_idx, int move) {
         if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return;
@@ -281,7 +225,9 @@ extern "C" {
     }
 
     API float mcts_get_final_value(MCTSManager* manager, int game_idx, int player_at_step) {
-        return mcts_internal_get_final_value(manager, game_idx, player_at_step);
+        if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return 0.0f;
+        const Board* board = &manager->games[game_idx]->board;
+        return mcts_internal_get_final_value(board, player_at_step);
     }
 
     API const Board* mcts_get_board_state(MCTSManager* manager, int game_idx) {
@@ -324,6 +270,8 @@ static double calculate_puct_score(const MCTSNode* node) {
     if (node == nullptr || node->parent == nullptr || node->parent->visit_count == 0) return 1e9;
     double q_value = (node->visit_count == 0) ? 0.0 : node->total_action_value / node->visit_count;
     double u_value = C_PUCT * node->prior_probability * sqrt(static_cast<double>(node->parent->visit_count)) / (1.0 + node->visit_count);
+    // 【核心修复】PUCT分数应该是从父节点的角度看的。父节点希望最大化自己的收益，
+    // 即 -（子节点的Q值） + UCB探索项。子节点的Q值是total_action_value/visit_count
     return -q_value + u_value;
 }
 
@@ -373,12 +321,8 @@ static void backpropagate(MCTSNode* node, float value) {
     }
 }
 
-static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, int player_at_step) {
-    if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) {
-        return 0.0f;
-    }
-
-    const Board* final_board = &manager->games[game_idx]->board;
+static float mcts_internal_get_final_value(const Board* final_board, int player_at_step) {
+    if (!final_board) return 0.0f;
 
     int black_tiles = pop_count(&final_board->tiles[BLACK]);
     int white_tiles = pop_count(&final_board->tiles[WHITE]);
@@ -392,30 +336,4 @@ static float mcts_internal_get_final_value(MCTSManager* manager, int game_idx, i
     }
 
     return static_cast<float>(score_diff) / static_cast<float>(BOARD_SQUARES);
-}
-
-
-static float rand_uniform_float() {
-    return (static_cast<float>(rand()) + 1.0f) / (static_cast<float>(RAND_MAX) + 2.0f);
-}
-
-static float rand_gamma(float alpha) {
-    if (alpha >= 1.0f) {
-        float d = alpha - 1.0f / 3.0f;
-        float c = 1.0f / sqrtf(9.0f * d);
-        float v, x;
-        while (true) {
-            do {
-                x = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f;
-                v = 1.0f + c * x;
-            } while (v <= 0.0f);
-            v = v * v * v;
-            float u = rand_uniform_float();
-            if (u < 1.0f - 0.0331f * (x * x) * (x * x)) return d * v;
-            if (logf(u) < 0.5f * x * x + d * (1.0f - v + logf(v))) return d * v;
-        }
-    }
-    else {
-        return rand_gamma(alpha + 1.0f) * powf(rand_uniform_float(), 1.0f / alpha);
-    }
 }
