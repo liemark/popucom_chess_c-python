@@ -1,3 +1,5 @@
+# self_play_worker.py
+
 import ctypes
 import os
 import platform
@@ -11,7 +13,7 @@ from popucom_nn_model import PomPomNN, BOARD_SIZE
 from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
 
 # --- 全局配置 ---
-MCTS_SIMULATIONS = 100
+MCTS_SIMULATIONS = 200
 NUM_PARALLEL_GAMES = 128
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
@@ -207,7 +209,7 @@ class GameBatchRunner:
                     self.move_counts[game_idx] += 1
 
                     if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
-                        print(f"游戏 {game_idx} 结束。")
+                        #print(f"游戏 {game_idx} 结束。")
                         if game_idx in self.active_games: self.active_games.remove(game_idx)
 
         print("所有并行游戏已完成。")
