@@ -1,5 +1,3 @@
-# self_play_worker.py
-
 import ctypes
 import os
 import platform
@@ -22,8 +20,9 @@ TOTAL_GAME_CYCLES = 6
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
-TEMPERATURE_INITIAL = 1.0
-TEMPERATURE_DECAY_MOVES = 30
+# 这个温度 (randomtemp) 用于在MCTS搜索后，根据访问次数选择最终的着法
+TEMPERATURE_MOVE_SELECTION = 1.0
+TEMPERATURE_DECAY_MOVES = 16
 
 
 # --- C 语言接口定义 ---
@@ -37,60 +36,45 @@ class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", 
 def setup_c_library():
     """
     加载 C++ 动态库并设置所有函数的参数类型 (argtypes) 和返回类型 (restype)。
-    这是与 C++ 代码签订的“合同”，必须严格匹配。
     """
     lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
     if not os.path.exists(lib_name):
         raise FileNotFoundError(f"未找到C库 '{lib_name}'。请重新编译C代码。")
     c_lib = ctypes.CDLL(os.path.abspath(lib_name))
 
-    # --- 为每个C++函数定义接口 ---
     c_lib.create_mcts_manager.argtypes = [ctypes.c_int]
     c_lib.create_mcts_manager.restype = ctypes.c_void_p
-
     c_lib.destroy_mcts_manager.argtypes = [ctypes.c_void_p]
-
     c_lib.mcts_run_simulations_and_get_requests.argtypes = [ctypes.c_void_p, ctypes.POINTER(Board),
                                                             ctypes.POINTER(ctypes.c_int), ctypes.c_int]
     c_lib.mcts_run_simulations_and_get_requests.restype = ctypes.c_int
-
     c_lib.mcts_feed_results.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
     c_lib.mcts_feed_results.restype = None
-
     c_lib.mcts_get_policy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
     c_lib.mcts_get_policy.restype = ctypes.c_bool
-
     c_lib.mcts_make_move.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-
     c_lib.mcts_is_game_over.argtypes = [ctypes.c_void_p, ctypes.c_int]
     c_lib.mcts_is_game_over.restype = ctypes.c_bool
-
     c_lib.mcts_get_final_value.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     c_lib.mcts_get_final_value.restype = ctypes.c_float
-
     c_lib.mcts_get_board_state.argtypes = [ctypes.c_void_p, ctypes.c_int]
     c_lib.mcts_get_board_state.restype = ctypes.POINTER(Board)
-
     c_lib.mcts_get_simulations_done.argtypes = [ctypes.c_void_p, ctypes.c_int]
     c_lib.mcts_get_simulations_done.restype = ctypes.c_int
-
     c_lib.pop_count.argtypes = [ctypes.POINTER(Bitboards)]
     c_lib.pop_count.restype = ctypes.c_int
 
     return c_lib
 
 
-# 在全局范围加载一次库
 c_lib = setup_c_library()
 
 
-# --- Python 端的总指挥 ---
 class GameBatchRunner:
     def __init__(self, model, num_games):
         self.num_games = num_games
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device).eval()
-
         self.mcts_manager = c_lib.create_mcts_manager(num_games)
         self.game_histories = [[] for _ in range(num_games)]
         self.move_counts = [0] * num_games
@@ -101,18 +85,18 @@ class GameBatchRunner:
         p, o = board_c.current_player, 1 - board_c.current_player
 
         def get_plane(bb):
-            plane = np.zeros(BOARD_SQUARES, dtype=np.float32);
+            plane = np.zeros(BOARD_SQUARES, dtype=np.float32)
             for i in range(BOARD_SQUARES):
                 if (bb.parts[i // 64] >> (i % 64)) & 1: plane[i] = 1.0
             return plane.reshape((BOARD_SIZE, BOARD_SIZE))
 
-        tensor[0, :, :] = get_plane(board_c.pieces[p]);
+        tensor[0, :, :] = get_plane(board_c.pieces[p])
         tensor[1, :, :] = get_plane(board_c.pieces[o])
-        tensor[2, :, :] = get_plane(board_c.tiles[p]);
+        tensor[2, :, :] = get_plane(board_c.tiles[p])
         tensor[3, :, :] = get_plane(board_c.tiles[o])
-        tensor[4, :, :] = 1. if p == 0 else 0.;
+        tensor[4, :, :] = 1. if p == 0 else 0.
         tensor[5, :, :] = 1. if p == 1 else 0.
-        tensor[6, :, :] = float(board_c.moves_left[0]) / MAX_MOVES_PER_PLAYER;
+        tensor[6, :, :] = float(board_c.moves_left[0]) / MAX_MOVES_PER_PLAYER
         tensor[7, :, :] = float(board_c.moves_left[1]) / MAX_MOVES_PER_PLAYER
         tensor[8, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[0]))) / BOARD_SQUARES
         tensor[9, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[1]))) / BOARD_SQUARES
@@ -147,28 +131,42 @@ class GameBatchRunner:
                                                                        MAX_BATCH_SIZE)
 
             if num_requests > 0:
-                batch_tensors = [self.board_to_tensor(board) for board in board_buffer[:num_requests]]
+                batch_tensors = [self.board_to_tensor(board_buffer[i]) for i in range(num_requests)]
                 input_batch = torch.from_numpy(np.array(batch_tensors)).to(self.device)
+
                 with torch.no_grad():
-                    policies_logits, values, _ = self.model(input_batch)
+                    # 模型返回原始 logits
+                    policies_logits, values, _, _ = self.model(input_batch)
+
+                    # 【核心修改】应用 KataGo 的根节点策略温度 (Softmax Temperature)
+                    # 这个温度在 MCTS 搜索 *之前* 应用，用于“拉平”神经网络的初始策略，鼓励探索
+                    initial_temp = 1.25  # 开局时的温度
+                    final_temp = 1.1  # 中后盘的温度
+                    halflife_moves = 25  # 温度衰减的半衰期 (步)
+
+                    # 计算衰减因子
+                    # 这个公式可以确保在 halflife_moves 步之后，温度从 initial_temp 衰减到一半
+                    decay_factor = np.log(final_temp / initial_temp) / halflife_moves
+
+                    # 遍历批处理中的每个游戏，因为它们的步数可能不同
+                    for i in range(num_requests):
+                        game_idx = request_indices[i]
+                        current_move_count = self.move_counts[game_idx]
+
+                        # 计算当前步数的策略温度
+                        temp = initial_temp * np.exp(decay_factor * current_move_count)
+                        softmax_temp = max(final_temp, temp)  # 确保温度不会低于最终值
+
+                        # 将温度应用到 logits 上
+                        policies_logits[i] /= softmax_temp
+
+                    # 现在，用加了温度的 logits 来计算 softmax
                     policies = torch.softmax(policies_logits, dim=1).cpu().numpy()
                     values = values.cpu().numpy().flatten()
-
-                # 【调试代码】在调用C++函数前，打印所有相关信息
-                #print("\n--- DEBUG INFO before c_lib.mcts_feed_results ---")
-                #print(f"num_requests from C++: {num_requests}")
-                #print(f"policies shape from Python: {policies.shape}, dtype: {policies.dtype}")
-                #print(f"values shape from Python: {values.shape}, dtype: {values.dtype}")
 
                 contiguous_policies = np.ascontiguousarray(policies, dtype=np.float32)
                 contiguous_values = np.ascontiguousarray(values, dtype=np.float32)
 
-                # 确认数组的内存布局是 C 连续的 (C_CONTIGUOUS)
-                #print(f"Is policies contiguous: {contiguous_policies.flags['C_CONTIGUOUS']}")
-                #print(f"Is values contiguous: {contiguous_values.flags['C_CONTIGUOUS']}")
-                #print("--- END DEBUG INFO ---\n")
-
-                # 现在，我们将处理过的、内存连续的数组指针传递给 C++ 函数。
                 c_lib.mcts_feed_results(
                     self.mcts_manager,
                     contiguous_policies.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -188,9 +186,12 @@ class GameBatchRunner:
                     state_tensor = self.board_to_tensor(board_state_ptr.contents)
                     self.game_histories[game_idx].append((state_tensor, policy_np, current_player))
 
-                    temperature = TEMPERATURE_INITIAL if self.move_counts[game_idx] < TEMPERATURE_DECAY_MOVES else 0.0
-                    if temperature > 0:
-                        move_probs = policy_np ** (1.0 / temperature)
+                    # 这个温度 (randomtemp) 用于在 MCTS 搜索 *之后*，根据访问次数选择最终要下的那步棋
+                    move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
+                                                                            game_idx] < TEMPERATURE_DECAY_MOVES else 0.0
+
+                    if move_selection_temp > 0:
+                        move_probs = policy_np ** (1.0 / move_selection_temp)
                         sum_probs = np.sum(move_probs)
                         if sum_probs > 1e-8:
                             move_probs /= sum_probs
@@ -209,7 +210,6 @@ class GameBatchRunner:
                     self.move_counts[game_idx] += 1
 
                     if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
-                        #print(f"游戏 {game_idx} 结束。")
                         if game_idx in self.active_games: self.active_games.remove(game_idx)
 
         print("所有并行游戏已完成。")
@@ -248,6 +248,5 @@ if __name__ == "__main__":
 
     for i in range(TOTAL_GAME_CYCLES):
         print(f"\n--- 开始第 {i + 1}/{TOTAL_GAME_CYCLES} 批次游戏 ---")
-        # 【修复】修正了这里的拼写错误
         runner = GameBatchRunner(model, NUM_PARALLEL_GAMES)
         runner.run()
