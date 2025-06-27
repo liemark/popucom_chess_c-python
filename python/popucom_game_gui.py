@@ -427,7 +427,7 @@ class PomPomGameGUI:
                 board_py = self._board_to_tensor(board_buffer[0])
                 input_tensor = torch.from_numpy(board_py).unsqueeze(0).to(self.device)
                 with torch.no_grad():
-                    policy_logits, value, _ = self.ai_model(input_tensor)
+                    policy_logits, value, _, _ = self.ai_model(input_tensor)
                     policy = torch.softmax(policy_logits, dim=1).cpu().numpy().flatten()
                     value_np = value.cpu().numpy().flatten()
 
@@ -480,7 +480,7 @@ class PomPomGameGUI:
                     board_py = self._board_to_tensor(board_buffer[0])
                     input_tensor = torch.from_numpy(board_py).unsqueeze(0).to(self.device)
                     with torch.no_grad():
-                        policy_logits, value, _ = self.ai_model(input_tensor)
+                        policy_logits, value, _, _ = self.ai_model(input_tensor)
                         policy = torch.softmax(policy_logits, dim=1).cpu().numpy().flatten()
                         value_np = value.cpu().numpy().flatten()
                     self.c_lib.mcts_feed_results(temp_manager, policy.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
