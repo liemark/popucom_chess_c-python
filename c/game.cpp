@@ -1,10 +1,9 @@
 #include "game.h"
-#include <cstring> // For memset/memcpy
+#include <cstring>
 #include <iostream>
 
 extern "C" {
 
-    // --- pop_count 函数实现 ---
     int pop_count(const Bitboards* bb) {
         if (!bb) return 0;
         int count = 0;
@@ -22,13 +21,10 @@ extern "C" {
         return count;
     }
 
-    // --- is_bit_set 函数的实现 ---
     bool is_bit_set(const Bitboards* bb, int sq) {
         if (!bb) return false;
         return GET_BIT(*bb, sq) != 0;
     }
-
-    // --- 公共函数实现 ---
 
     void init_board(Board* board) {
         if (!board) return;
@@ -50,11 +46,11 @@ extern "C" {
             std::cout << r + 1 << " ";
             for (int c = 0; c < BOARD_WIDTH; ++c) {
                 int sq = get_sq(r, c);
-                if (is_bit_set(&board->pieces[BLACK], sq))      std::cout << "X ";
-                else if (is_bit_set(&board->pieces[WHITE], sq)) std::cout << "O ";
-                else if (is_bit_set(&board->tiles[BLACK], sq))  std::cout << ". ";
-                else if (is_bit_set(&board->tiles[WHITE], sq))  std::cout << "o ";
-                else                                            std::cout << "- ";
+                if (GET_BIT(board->pieces[BLACK], sq))      std::cout << "X ";
+                else if (GET_BIT(board->pieces[WHITE], sq)) std::cout << "O ";
+                else if (GET_BIT(board->tiles[BLACK], sq))  std::cout << ". ";
+                else if (GET_BIT(board->tiles[WHITE], sq))  std::cout << "o ";
+                else                                        std::cout << "- ";
             }
             std::cout << std::endl;
         }
@@ -119,7 +115,7 @@ extern "C" {
         if (!board || square < 0 || square >= BOARD_SQUARES) return false;
 
         Bitboards legal_moves = get_legal_moves(board);
-        if (!is_bit_set(&legal_moves, square)) {
+        if (!GET_BIT(legal_moves, square)) {
             return false;
         }
 
@@ -129,7 +125,7 @@ extern "C" {
         SET_BIT(board->pieces[player], square);
 
         Bitboards elimination_mask = { 0, 0 };
-        Bitboards coloring_lines_mask = { 0, 0 }; // 用来标记哪些方向(0-3)发生了消除
+        Bitboards coloring_lines_mask = { 0, 0 };
         bool elimination_occurred = false;
 
         int dr[] = { 0, 1, -1, 1 };
@@ -144,7 +140,7 @@ extern "C" {
                 for (int k = 1; k < BOARD_WIDTH; ++k) {
                     int r = get_row(square) + dir * k * dr[i];
                     int c = get_col(square) + dir * k * dc[i];
-                    if (is_valid(r, c) && is_bit_set(&board->pieces[player], get_sq(r, c))) {
+                    if (is_valid(r, c) && GET_BIT(board->pieces[player], get_sq(r, c))) {
                         line_len++;
                         SET_BIT(current_line, get_sq(r, c));
                     }
@@ -158,7 +154,7 @@ extern "C" {
                 elimination_occurred = true;
                 elimination_mask.parts[0] |= current_line.parts[0];
                 elimination_mask.parts[1] |= current_line.parts[1];
-                SET_BIT(coloring_lines_mask, i); // 标记这个方向
+                SET_BIT(coloring_lines_mask, i);
             }
         }
 
@@ -171,24 +167,16 @@ extern "C" {
             final_color_mask.parts[1] = elimination_mask.parts[1];
 
             for (int i = 0; i < 4; ++i) {
-                if (is_bit_set(&coloring_lines_mask, i)) {
-                    // 正向射线
-                    for (int k = 1; k < BOARD_WIDTH; ++k) {
-                        int r = get_row(square) + k * dr[i];
-                        int c = get_col(square) + k * dc[i];
-                        if (!is_valid(r, c)) break;
-                        int ray_sq = get_sq(r, c);
-                        if (is_bit_set(&board->pieces[opponent], ray_sq)) break;
-                        SET_BIT(final_color_mask, ray_sq);
-                    }
-                    // 反向射线
-                    for (int k = 1; k < BOARD_WIDTH; ++k) {
-                        int r = get_row(square) - k * dr[i];
-                        int c = get_col(square) - k * dc[i];
-                        if (!is_valid(r, c)) break;
-                        int ray_sq = get_sq(r, c);
-                        if (is_bit_set(&board->pieces[opponent], ray_sq)) break;
-                        SET_BIT(final_color_mask, ray_sq);
+                if (GET_BIT(coloring_lines_mask, i)) {
+                    for (int dir = -1; dir <= 1; dir += 2) {
+                        for (int k = 1; k < BOARD_WIDTH; ++k) {
+                            int r = get_row(square) + dir * k * dr[i];
+                            int c = get_col(square) + dir * k * dc[i];
+                            if (!is_valid(r, c)) break;
+                            int ray_sq = get_sq(r, c);
+                            if (GET_BIT(board->pieces[opponent], ray_sq)) break;
+                            SET_BIT(final_color_mask, ray_sq);
+                        }
                     }
                 }
             }
