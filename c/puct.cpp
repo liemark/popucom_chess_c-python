@@ -11,7 +11,6 @@
 #include <numeric>
 #include <stdexcept>
 
-// 包含正确的平台特定头文件
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -19,7 +18,10 @@
 #endif
 
 
-#define C_PUCT 0.05f
+#define C_PUCT 0.15f  // 占领数量比胜率小1个数量级
+#define DIRICHLET_ALPHA_BASE 0.03f
+#define BENCHMARK_BOARD_SIZE (19.0f * 19.0f)
+#define DIRICHLET_EPSILON 0.1f // 随占领数量适当调小噪声
 
 // --- 内部辅助函数声明 ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p);
@@ -28,6 +30,8 @@ static MCTSNode* select_child(MCTSNode* node);
 static void expand_node(MCTSNode* node, const Board* board_state, const float* policy);
 static void backpropagate(MCTSNode* node, float value);
 static float mcts_internal_get_final_value(const Board* final_board, int player_at_step);
+static float rand_uniform_float();
+static float rand_gamma(float alpha);
 
 
 extern "C" {
@@ -49,7 +53,6 @@ extern "C" {
                 init_board(&manager->games[i]->board);
                 manager->games[i]->root = create_node(nullptr, -1, 1.0f);
                 manager->games[i]->active = true;
-                manager->games[i]->simulations_done = 0;
             }
             return manager;
         }
@@ -92,11 +95,8 @@ extern "C" {
             }
 
             if (get_game_result(&current_sim_board) != IN_PROGRESS) {
-                // 【核心修复】价值应该是从刚刚完成移动的玩家的视角来计算的
                 int player_who_moved = 1 - current_sim_board.current_player;
                 float value = mcts_internal_get_final_value(&current_sim_board, player_who_moved);
-
-                // 直接回传这个价值，backpropagate函数会处理后续的正负号翻转
                 if (node) backpropagate(node, value);
                 tree->simulations_done++;
             }
@@ -105,7 +105,9 @@ extern "C" {
                     manager->is_root_request_buffer.push_back(node == tree->root);
                     manager->request_nodes.push_back(node);
                     manager->request_board_buffer.push_back(current_sim_board);
-                    request_game_indices_ptr[manager->request_board_buffer.size() - 1] = i;
+                    if (!manager->request_board_buffer.empty()) {
+                        request_game_indices_ptr[manager->request_board_buffer.size() - 1] = i;
+                    }
                 }
             }
         }
@@ -129,7 +131,37 @@ extern "C" {
 
             const Board* board_state = &manager->request_board_buffer[i];
 
-            expand_node(node, board_state, original_policy);
+            float final_policy[BOARD_SQUARES];
+            memcpy(final_policy, original_policy, sizeof(float) * BOARD_SQUARES);
+
+            if (manager->is_root_request_buffer[i]) {
+                Bitboards legal_moves = get_legal_moves(board_state);
+                int num_legal_moves = pop_count(&legal_moves);
+                if (num_legal_moves > 1) {
+                    float dynamic_alpha = DIRICHLET_ALPHA_BASE * BENCHMARK_BOARD_SIZE / static_cast<float>(num_legal_moves);
+                    std::vector<float> noise(num_legal_moves);
+                    float noise_sum = 0.0f;
+                    for (int k = 0; k < num_legal_moves; ++k) {
+                        noise[k] = rand_gamma(dynamic_alpha);
+                        noise_sum += noise[k];
+                    }
+                    if (noise_sum > 1e-6f) {
+                        for (int k = 0; k < num_legal_moves; ++k) {
+                            noise[k] /= noise_sum;
+                        }
+                    }
+                    int noise_idx = 0;
+                    for (int move_idx = 0; move_idx < BOARD_SQUARES; ++move_idx) {
+                        if (is_bit_set(&legal_moves, move_idx)) {
+                            if (noise_idx < num_legal_moves) {
+                                final_policy[move_idx] = final_policy[move_idx] * (1.0f - DIRICHLET_EPSILON) + noise[noise_idx++] * DIRICHLET_EPSILON;
+                            }
+                        }
+                    }
+                }
+            }
+
+            expand_node(node, board_state, final_policy);
             backpropagate(node, value_for_node);
 
             MCTSNode* root_finder = node;
@@ -186,7 +218,6 @@ extern "C" {
                     int move = child->move;
                     if (move >= 0 && move < BOARD_SQUARES) {
                         policy_output[move] = static_cast<float>(child->visit_count) / total_visits;
-                        // 【核心修复】Q值现在应该直接使用，因为backpropagate已经处理了正负号
                         q_values_output[move] = (child->visit_count > 0)
                             ? static_cast<float>(child->total_action_value / child->visit_count)
                             : 0.0f;
@@ -196,6 +227,7 @@ extern "C" {
         }
         return true;
     }
+
 
     API void mcts_make_move(MCTSManager* manager, int game_idx, int move) {
         if (!manager || game_idx >= manager->num_games || !manager->games[game_idx]) return;
@@ -242,7 +274,7 @@ extern "C" {
 
 } // extern "C"
 
-// --- 内部辅助函数的具体实现 (使用现代C++) ---
+// --- 内部辅助函数的具体实现 ---
 static MCTSNode* create_node(MCTSNode* parent, int move, float prior_p) {
     try {
         MCTSNode* node = new MCTSNode();
@@ -268,11 +300,15 @@ static void free_node_recursive(MCTSNode* node) {
 
 static double calculate_puct_score(const MCTSNode* node) {
     if (node == nullptr || node->parent == nullptr || node->parent->visit_count == 0) return 1e9;
+
+    // q_value 是从父节点的视角看的，因为 backpropagate 已经处理了符号翻转
     double q_value = (node->visit_count == 0) ? 0.0 : node->total_action_value / node->visit_count;
+
     double u_value = C_PUCT * node->prior_probability * sqrt(static_cast<double>(node->parent->visit_count)) / (1.0 + node->visit_count);
-    // 【核心修复】PUCT分数应该是从父节点的角度看的。父节点希望最大化自己的收益，
-    // 即 -（子节点的Q值） + UCB探索项。子节点的Q值是total_action_value/visit_count
-    return -q_value + u_value;
+
+    // 【核心修复】父节点的目标是最大化它自己的期望收益，所以直接将 Q 值和探索项相加。
+    // 之前错误的 `-q_value` 导致 AI 会选择让父节点收益最小化的走法。
+    return q_value + u_value;
 }
 
 
@@ -315,6 +351,7 @@ static void expand_node(MCTSNode* node, const Board* board_state, const float* p
 static void backpropagate(MCTSNode* node, float value) {
     while (node != nullptr) {
         node->visit_count++;
+        // value 是从当前节点的视角看的，它的父节点需要一个相反的值
         node->total_action_value += value;
         value = -value;
         node = node->parent;
@@ -331,9 +368,34 @@ static float mcts_internal_get_final_value(const Board* final_board, int player_
     if (player_at_step == BLACK) {
         score_diff = black_tiles - white_tiles;
     }
-    else { // player_at_step == WHITE
+    else {
         score_diff = white_tiles - black_tiles;
     }
 
     return static_cast<float>(score_diff) / static_cast<float>(BOARD_SQUARES);
+}
+
+static float rand_uniform_float() {
+    return (static_cast<float>(rand()) + 1.0f) / (static_cast<float>(RAND_MAX) + 2.0f);
+}
+
+static float rand_gamma(float alpha) {
+    if (alpha >= 1.0f) {
+        float d = alpha - 1.0f / 3.0f;
+        float c = 1.0f / sqrtf(9.0f * d);
+        float v, x;
+        while (true) {
+            do {
+                x = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f;
+                v = 1.0f + c * x;
+            } while (v <= 0.0f);
+            v = v * v * v;
+            float u = rand_uniform_float();
+            if (u < 1.0f - 0.0331f * (x * x) * (x * x)) return d * v;
+            if (logf(u) < 0.5f * x * x + d * (1.0f - v + logf(v))) return d * v;
+        }
+    }
+    else {
+        return rand_gamma(alpha + 1.0f) * powf(rand_uniform_float(), 1.0f / alpha);
+    }
 }
