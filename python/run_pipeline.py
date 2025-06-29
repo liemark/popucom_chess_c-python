@@ -3,11 +3,6 @@ import sys
 import time
 import os
 
-# --- 配置 ---
-# 您可以在这里调整每次循环中要运行的自对弈脚本的次数
-# 例如，设置为 5 意味着每训练一次模型，会先生成 5 * NUM_PARALLEL_GAMES 局游戏数据
-SELF_PLAY_RUNS_PER_TRAINING = 1
-
 
 def run_script(script_name):
     """一个辅助函数，用于调用另一个Python脚本并等待其完成。"""
@@ -43,11 +38,9 @@ def main_pipeline():
 
         # --- 步骤 1: 自对弈数据生成 ---
         print("\n>>> 阶段 1: 生成自对弈数据...")
-        for i in range(SELF_PLAY_RUNS_PER_TRAINING):
-            print(f"\n  -- 自对弈运行: 第 {i + 1}/{SELF_PLAY_RUNS_PER_TRAINING} 批 --")
-            if not run_script("self_play_worker.py"):
-                print("自对弈脚本执行失败，终止流水线。")
-                break
+        if not run_script("self_play_worker.py"):
+            print("自对弈脚本执行失败，终止流水线。")
+            break
 
         # --- 步骤 2: 模型训练 ---
         print("\n>>> 阶段 2: 使用新数据训练模型...")
