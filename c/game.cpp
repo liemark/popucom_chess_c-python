@@ -2,23 +2,39 @@
 #include <cstring>
 #include <iostream>
 
+// For pop_count optimization
+#if defined(__GNUC__) || defined(__clang__)
+#include <x86intrin.h>
+#endif
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+
 extern "C" {
 
     int pop_count(const Bitboards* bb) {
         if (!bb) return 0;
+        // OPTIMIZED: Use compiler intrinsics for popcount, which are much faster.
+#if defined(__GNUC__) || defined(__clang__)
+        return __builtin_popcountll(bb->parts[0]) + __builtin_popcountll(bb->parts[1]);
+#elif defined(_MSC_VER)
+        return (int)__popcnt64(bb->parts[0]) + (int)__popcnt64(bb->parts[1]);
+#else
+        // Fallback to the classic algorithm if no intrinsic is available.
         int count = 0;
         uint64_t p1 = bb->parts[0];
         uint64_t p2 = bb->parts[1];
-
-        while (p1) {
-            p1 &= (p1 - 1);
-            count++;
-        }
-        while (p2) {
-            p2 &= (p2 - 1);
-            count++;
-        }
+        while (p1) { p1 &= (p1 - 1); count++; }
+        while (p2) { p2 &= (p2 - 1); count++; }
         return count;
+#endif
+    }
+
+    // NEW: Function to get the raw score difference (Black - White)
+    int get_score_diff(const Board* board) {
+        if (!board) return 0;
+        return pop_count(&board->tiles[BLACK]) - pop_count(&board->tiles[WHITE]);
     }
 
     bool is_bit_set(const Bitboards* bb, int sq) {
@@ -97,10 +113,9 @@ extern "C" {
     enum GameResult get_game_result(const Board* board) {
         if (!board) return DRAW;
         if (board->moves_left[BLACK] <= 0 && board->moves_left[WHITE] <= 0) {
-            int black_score = pop_count(&board->tiles[BLACK]);
-            int white_score = pop_count(&board->tiles[WHITE]);
-            if (black_score > white_score) return BLACK_WIN;
-            if (white_score > black_score) return WHITE_WIN;
+            int score_diff = get_score_diff(board);
+            if (score_diff > 0) return BLACK_WIN;
+            if (score_diff < 0) return WHITE_WIN;
             return DRAW;
         }
 
