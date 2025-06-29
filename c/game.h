@@ -50,6 +50,7 @@ extern "C" {
     API bool make_move(Board* board, int square);
     API int pop_count(const Bitboards* bb);
     API bool is_bit_set(const Bitboards* bb, int sq);
+    API int get_score_diff(const Board* board); // NEW: Export the score difference function.
 
 #ifdef __cplusplus
 }
