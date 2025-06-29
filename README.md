@@ -95,3 +95,4 @@ run_pipeline.py 脚本自动化了上述两个步骤。它会不断循环：
 ```
 python run_pipeline.py
 ```
+从老项目 popucom_chess 改过来的，主要是使用批处理的方法一次生成大量对局，从而大幅度加速训练过程
