@@ -7,7 +7,7 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 目前仅需训练6h即可达到人类顶尖水平，24h远超任何人类（7950x+5080）
 六月初纯python写的旧项目连接：
 ```
-https://github.com/liemark/popucom_chess/tree/main
+https://github.com/liemark/popucom_chess
 ```
 旧项目运行速度较慢，虽然也达到了人类平均水平，但花了整整好多天才训练出来
 # 泡姆棋（叭啵棋） (Match-n-POP)
