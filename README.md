@@ -1,3 +1,10 @@
+本项目使用了katago的许多先进优化技术
+```
+https://katagotraining.org/
+https://arxiv.org/pdf/1902.10565
+https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
+```
+目前仅需训练6h即可达到人类顶尖水平，24h远超任何人类（7950x+5080）
 # 泡姆棋 (Popucom Chess)
 泡姆棋是鹰角网络的游戏泡姆泡姆（Popucom）的一种在 9×9 棋盘上进行的策略棋类游戏，结合了棋子放置、三消机制和区域涂色元素。
 
@@ -96,4 +103,4 @@ run_pipeline.py 脚本自动化了上述两个步骤。它会不断循环：
 python run_pipeline.py
 ```
 从老项目 popucom_chess 改过来的，主要是使用批处理的方法一次生成大量对局，从而大幅度加速训练过程
-目前仅需训练6h即可达到人类顶尖水平，24h远超任何人类（7950x+5080）
+
