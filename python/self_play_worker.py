@@ -1,3 +1,5 @@
+# self_play_worker.py
+
 import ctypes
 import os
 import platform
@@ -22,7 +24,8 @@ BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 # --- 温度参数 ---
 # 这个温度 (randomtemp) 用于在MCTS搜索后，根据访问次数选择最终的着法
 TEMPERATURE_MOVE_SELECTION = 1.0
-TEMPERATURE_DECAY_MOVES = 16
+TEMPERATURE_DECAY_MOVES = 20
+TEMPERATURE_END = 0.1
 
 
 # --- C 语言接口定义 ---
@@ -138,7 +141,7 @@ class GameBatchRunner:
                     # 模型返回原始 logits
                     policies_logits, values, _, _ = self.model(input_batch)
 
-                    # 【核心修改】应用 KataGo 的根节点策略温度 (Softmax Temperature)
+                    # 应用 KataGo 的根节点策略温度 (Softmax Temperature)
                     # 这个温度在 MCTS 搜索 *之前* 应用，用于“拉平”神经网络的初始策略，鼓励探索
                     initial_temp = 1.25  # 开局时的温度
                     final_temp = 1.1  # 中后盘的温度
@@ -188,7 +191,7 @@ class GameBatchRunner:
 
                     # 这个温度 (randomtemp) 用于在 MCTS 搜索 *之后*，根据访问次数选择最终要下的那步棋
                     move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
-                                                                            game_idx] < TEMPERATURE_DECAY_MOVES else 0.0
+                                                                            game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
 
                     if move_selection_temp > 0:
                         move_probs = policy_np ** (1.0 / move_selection_temp)
@@ -197,7 +200,7 @@ class GameBatchRunner:
                             move_probs /= sum_probs
                         else:
                             move_probs = policy_np
-                    else:
+                    else: # 只有temp，一般是TEMPERATURE_END <= 0.0时，开始精确搜索模式
                         move_probs = np.zeros_like(policy_np)
                         if np.sum(policy_np) > 0: move_probs[np.argmax(policy_np)] = 1.0
 
