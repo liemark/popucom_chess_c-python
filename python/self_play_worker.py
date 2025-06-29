@@ -14,11 +14,12 @@ from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
 
 # --- 全局配置 ---
 MCTS_SIMULATIONS = 200
-NUM_PARALLEL_GAMES = 128
+NUM_PARALLEL_GAMES = 128 # 每次同时生成的对局数量
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
 DATA_DIR = "self_play_data"
-TOTAL_GAME_CYCLES = 6
+TOTAL_GAME_CYCLES = 6 # 生成轮数
+# 每次运行 self_play_worker.py 会生成 TOTAL_GAME_CYCLES * NUM_PARALLEL_GAMES 局对局
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
