@@ -10,7 +10,8 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 https://github.com/liemark/popucom_chess/tree/main
 ```
 旧项目运行速度较慢，虽然也达到了人类平均水平，但花了整整好多天才训练出来
-# 泡姆棋 (Popucom Chess)
+# 泡姆棋（叭啵棋） (Match-n-POP)
+注：叭啵棋（Match-n-POP）是泡姆泡姆游戏内的官方名称，贴纸有提及
 泡姆棋是鹰角网络的游戏泡姆泡姆（Popucom）的一种在 9×9 棋盘上进行的策略棋类游戏，结合了棋子放置、三消机制和区域涂色元素。
 
 ## 游戏目标
