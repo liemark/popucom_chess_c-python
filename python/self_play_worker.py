@@ -6,10 +6,9 @@ import pickle
 import numpy as np
 import torch
 
-# --- 导入我们自己的模块 ---
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
 
-# popucom_nn_interface.py is not used directly, but its constants are defined here.
+# popucom_nn_interface.py 也有，但在这直接定义了
 MAX_MOVES_PER_PLAYER = 25
 
 # --- 全局配置 ---
