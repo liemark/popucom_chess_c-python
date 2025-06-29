@@ -1,55 +1,40 @@
 #ifndef PUCT_H
 #define PUCT_H
 
-#include "game.h"
-#include <vector>
+#include "game.h" // 包含游戏核心定义
 
-// --- 将所有结构体的完整定义放在头文件中 ---
-struct MCTSNode {
-    MCTSNode* parent = nullptr;
-    std::vector<MCTSNode*> children;
-    int move = -1;
-    int visit_count = 0;
-    double total_action_value = 0.0;
-    float prior_probability = 0.0f;
-};
-
-struct MCTSTree {
-    Board board;
-    MCTSNode* root = nullptr;
-    bool active = false;
-    int simulations_done = 0;
-};
-
-struct MCTSManager {
-    int num_games = 0;
-    std::vector<MCTSTree*> games;
-    std::vector<MCTSNode*> request_nodes;
-    std::vector<Board> request_board_buffer;
-    std::vector<bool> is_root_request_buffer;
-};
-
-#if defined(_WIN32) || defined(_WIN64)
-#define API __declspec(dllexport)
-#else
-#define API
-#endif
+// Forward declaration for the memory pool
+class Arena;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-    API MCTSManager* create_mcts_manager(int num_parallel_games);
-    API void destroy_mcts_manager(MCTSManager* manager_handle);
-    API int mcts_run_simulations_and_get_requests(MCTSManager* manager_handle, Board* request_board_output, int* request_game_indices_ptr, int max_requests);
-    API void mcts_feed_results(MCTSManager* manager_handle, const float* policies, const float* values);
-    API bool mcts_get_policy(MCTSManager* manager_handle, int game_idx, float* policy_output);
-    API bool mcts_get_analysis_data(MCTSManager* manager, int game_idx, float* q_values_output, float* policy_output);
-    API void mcts_make_move(MCTSManager* manager_handle, int game_idx, int move);
-    API bool mcts_is_game_over(MCTSManager* manager_handle, int game_idx);
-    API float mcts_get_final_value(MCTSManager* manager_handle, int game_idx, int player_at_step);
-    API const Board* mcts_get_board_state(MCTSManager* manager_handle, int game_idx);
-    API int mcts_get_simulations_done(MCTSManager* manager_handle, int game_idx);
+	// ... (其他函数声明保持不变) ...
+
+	/**
+	 * @brief (仅用于GUI/分析) 获取根节点下所有合法走棋的详细信息。
+	 * * @param manager_ptr 指向 MCTS 管理器的指针。
+	 * @param game_index 要分析的游戏索引。
+	 * @param moves_buffer int数组，填充合法走棋的位置。
+	 * @param q_values_buffer float数组，填充对应走棋的Q值(当前玩家视角)。
+	 * @param visit_counts_buffer int数组，填充对应走棋的访问次数。
+	 * @param puct_scores_buffer float数组，填充对应走棋的PUCT分数。 // NEW: Added PUCT scores buffer
+	 * @param buffer_size 提供的缓冲区的大小。
+	 * @return int 返回找到的合法走棋数量。
+	 */
+	API int mcts_get_analysis_data(void* manager_ptr, int game_index, int* moves_buffer, float* q_values_buffer, int* visit_counts_buffer, float* puct_scores_buffer, int buffer_size);
+
+
+	/**
+	 * @brief (仅用于GUI/分析) 为GUI重置指定游戏的MCTS状态。
+	 * * 当用户在GUI中悔棋或开始新分析时，需要用新的棋盘状态重置MCTS。
+	 *
+	 * @param manager_ptr 指向 MCTS 管理器的指针。
+	 * @param game_index 要重置的游戏索引 (在GUI中通常为0)。
+	 * @param board 指向新棋盘状态的指针。
+	 */
+	API void mcts_reset_for_analysis(void* manager_ptr, int game_index, const Board* board);
 
 #ifdef __cplusplus
 }
