@@ -1,4 +1,4 @@
-本项目使用了katago的一些先进优化技术
+本项目使用了katago的一些先进优化技术，如不确定度加权，软温度头，动态狄利克雷噪声
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
