@@ -8,21 +8,16 @@ import time
 import ctypes
 import platform
 
-# --- 导入我们自己的模块 ---
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
 from self_play_worker import MAX_MOVES_PER_PLAYER
 
-
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
-
-
 class Board(ctypes.Structure):
     _fields_ = [
         ("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
         ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)
     ]
-
 
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
