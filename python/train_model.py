@@ -1,3 +1,5 @@
+# train_model.py
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -74,7 +76,7 @@ def get_args():
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
     parser.add_argument('--ownership-weight', type=float, default=1.0, help='所有权损失的权重')
-    # 【新增】辅助软策略目标的权重
+    # 辅助软策略目标的权重
     parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重 (KataGo 推荐)')
 
     parser.add_argument('--no-augment', action='store_true', help='如果设置此项，则禁用数据增强')
@@ -130,7 +132,7 @@ def train_model(args):
 
             optimizer.zero_grad()
 
-            # 【核心修改】模型现在返回四个值
+            # 模型现在返回四个值
             pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
 
             # --- 计算软策略目标 ---
