@@ -1,5 +1,3 @@
-# train_model.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -47,7 +45,7 @@ class PopucomDataset(Dataset):
         return state, policy, value, ownership
 
 
-def load_data(data_dir, max_files=50):
+def load_data(data_dir, max_files=100):
     """从目录加载多个 .pkl 数据文件"""
     all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl")), key=os.path.getmtime, reverse=True)
@@ -76,8 +74,9 @@ def get_args():
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
     parser.add_argument('--ownership-weight', type=float, default=1.0, help='所有权损失的权重')
-    # 辅助软策略目标的权重
     parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重 (KataGo 推荐)')
+    # NEW: Added weight for the new uncertainty loss
+    parser.add_argument('--uncertainty-weight', type=float, default=0.25, help='价值不确定性损失的权重 (KataGo 推荐)')
 
     parser.add_argument('--no-augment', action='store_true', help='如果设置此项，则禁用数据增强')
     return parser.parse_args()
@@ -118,11 +117,13 @@ def train_model(args):
     policy_loss_fn = nn.CrossEntropyLoss()
     value_loss_fn = nn.MSELoss()
     ownership_loss_fn = nn.MSELoss()
+    # NEW: Loss function for the uncertainty head
+    uncertainty_loss_fn = nn.MSELoss()
 
     start_time = time.time()
     for epoch in range(args.epochs):
         # 初始化所有损失的累加器
-        losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'ownership': 0.0, 'soft_policy': 0.0}
+        losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'ownership': 0.0, 'soft_policy': 0.0, 'uncertainty': 0.0}
 
         for states, target_policies, target_values, target_ownerships in dataloader:
             states = states.to(device)
@@ -132,25 +133,33 @@ def train_model(args):
 
             optimizer.zero_grad()
 
-            # 模型现在返回四个值
-            pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
+            # MODIFIED: Model now returns five values
+            pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits, pred_uncertainties = model(states)
 
             # --- 计算软策略目标 ---
-            soft_policy_temp = 4.0  # KataGo 使用的软化温度
-            target_policies_soft = target_policies + 1e-8  # 避免 log(0)
+            soft_policy_temp = 4.0
+            target_policies_soft = target_policies + 1e-8
             target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
             target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
+
+            # --- 计算不确定性目标 ---
+            # The target is the squared error between the predicted value and the MCTS-derived "true" value.
+            # We use .detach() to implement the "stop_gradient" concept from the KataGo paper.
+            with torch.no_grad():
+                uncertainty_target = (pred_values.detach() - target_values) ** 2
 
             # --- 计算所有损失 ---
             loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
             loss_value = value_loss_fn(pred_values, target_values)
             loss_ownership = ownership_loss_fn(pred_ownerships, target_ownerships)
             loss_soft_policy = policy_loss_fn(pred_soft_policy_logits, target_policies_soft)
+            loss_uncertainty = uncertainty_loss_fn(pred_uncertainties, uncertainty_target)
 
             loss = (args.policy_weight * loss_policy +
                     args.value_weight * loss_value +
                     args.ownership_weight * loss_ownership +
-                    args.soft_policy_weight * loss_soft_policy)
+                    args.soft_policy_weight * loss_soft_policy +
+                    args.uncertainty_weight * loss_uncertainty) # Add new loss to total
 
             # 累加损失
             losses['total'] += loss.item()
@@ -158,6 +167,7 @@ def train_model(args):
             losses['value'] += loss_value.item()
             losses['ownership'] += loss_ownership.item()
             losses['soft_policy'] += loss_soft_policy.item()
+            losses['uncertainty'] += loss_uncertainty.item()
 
             loss.backward()
             optimizer.step()
@@ -169,7 +179,8 @@ def train_model(args):
               f"策略: {losses['policy'] / num_batches:.4f} | "
               f"价值: {losses['value'] / num_batches:.4f} | "
               f"所有权: {losses['ownership'] / num_batches:.4f} | "
-              f"软策略: {losses['soft_policy'] / num_batches:.4f}")
+              f"软策略: {losses['soft_policy'] / num_batches:.4f} | "
+              f"不确定性: {losses['uncertainty'] / num_batches:.4f}") # Print new loss
 
     end_time = time.time()
     print(f"\n训练完成，用时: {end_time - start_time:.2f} 秒。")
