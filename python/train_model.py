@@ -69,7 +69,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="训练 PomPomNN 模型")
     parser.add_argument('--data-dir', type=str, default='self_play_data', help='自对弈数据所在的目录')
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
-    parser.add_argument('--epochs', type=int, default=5, help='训练的总轮数')
+    parser.add_argument('--epochs', type=int, default=20, help='训练的总轮数')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
     parser.add_argument('--lr', type=float, default=1e-5, help='学习率')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
