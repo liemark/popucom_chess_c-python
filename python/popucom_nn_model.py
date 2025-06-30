@@ -2,14 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# 导入神经网络输入接口相关的常量
 try:
     from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE
 except ImportError:
+    print("错误: 无法导入 popucom_nn_interface.py。请确保它在同一目录下。")
+    # Provide default values as a fallback for standalone execution
     NUM_INPUT_CHANNELS = 11
     BOARD_SIZE = 9
 
 
 class ResidualBlock(nn.Module):
+    """
+    一个标准的残差块，采用 KataGo 论文中描述的前激活 (Pre-activation) 结构。
+    """
+
     def __init__(self, num_filters):
         super(ResidualBlock, self).__init__()
         self.bn1 = nn.BatchNorm2d(num_filters)
@@ -30,6 +37,10 @@ class ResidualBlock(nn.Module):
 
 
 class GlobalPoolingBias(nn.Module):
+    """
+    实现全局池化偏置结构。
+    """
+
     def __init__(self, num_filters):
         super(GlobalPoolingBias, self).__init__()
         self.bn = nn.BatchNorm2d(num_filters)
@@ -46,28 +57,31 @@ class GlobalPoolingBias(nn.Module):
 
 
 class PomPomNN(nn.Module):
-    # Model now has FIVE heads: policy, value, ownership, soft_policy, and value_uncertainty
+    """
+    泡姆棋的神经网络模型，现在包含了四个头：策略、价值、所有权和辅助软策略。
+    """
     ACTUAL_INPUT_CHANNELS = NUM_INPUT_CHANNELS + 2
 
     def __init__(self, num_res_blocks=6, num_filters=96):
         super(PomPomNN, self).__init__()
-        self.num_res_blocks, self.num_filters = num_res_blocks, num_filters
+        self.num_res_blocks = num_res_blocks
+        self.num_filters = num_filters
 
-        # Main Body
+        # 主干网络
         self.initial_conv = nn.Conv2d(self.ACTUAL_INPUT_CHANNELS, num_filters, kernel_size=3, padding=1, bias=False)
         self.initial_bn = nn.BatchNorm2d(num_filters)
         self.initial_relu = nn.ReLU(inplace=True)
         self.global_pool_bias_initial = GlobalPoolingBias(num_filters)
         self.res_blocks = nn.ModuleList([ResidualBlock(num_filters) for _ in range(num_res_blocks)])
 
-        # Policy Head
+        # 主策略头
         self.policy_conv = nn.Conv2d(num_filters, 2, kernel_size=1, bias=False)
         self.policy_bn = nn.BatchNorm2d(2)
         self.policy_relu = nn.ReLU(inplace=True)
         self.global_pool_bias_policy = GlobalPoolingBias(2)
         self.policy_fc = nn.Linear(2 * BOARD_SIZE * BOARD_SIZE, BOARD_SIZE * BOARD_SIZE)
 
-        # Value Head
+        # 价值头
         self.value_conv = nn.Conv2d(num_filters, 1, kernel_size=1, bias=False)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_relu = nn.ReLU(inplace=True)
@@ -75,24 +89,17 @@ class PomPomNN(nn.Module):
         self.value_fc1 = nn.Linear(BOARD_SIZE * BOARD_SIZE, num_filters)
         self.value_fc2 = nn.Linear(num_filters, 1)
 
-        # Ownership Head
+        # 所有权头
         self.ownership_conv = nn.Conv2d(num_filters, 1, kernel_size=1, bias=False)
         self.ownership_bn = nn.BatchNorm2d(1)
 
-        # Soft Policy Head
+        # 软策略头
+        # 它的结构与主策略头完全相同，但有自己独立的权重。
         self.soft_policy_conv = nn.Conv2d(num_filters, 2, kernel_size=1, bias=False)
         self.soft_policy_bn = nn.BatchNorm2d(2)
         self.soft_policy_relu = nn.ReLU(inplace=True)
         self.soft_global_pool_bias_policy = GlobalPoolingBias(2)
         self.soft_policy_fc = nn.Linear(2 * BOARD_SIZE * BOARD_SIZE, BOARD_SIZE * BOARD_SIZE)
-
-        # --- NEW: Value Uncertainty Head ---
-        # It has a similar structure to the value head, but predicts a non-negative value.
-        self.uncertainty_conv = nn.Conv2d(num_filters, 1, kernel_size=1, bias=False)
-        self.uncertainty_bn = nn.BatchNorm2d(1)
-        self.uncertainty_relu = nn.ReLU(inplace=True)
-        self.uncertainty_fc1 = nn.Linear(BOARD_SIZE * BOARD_SIZE, num_filters // 2)
-        self.uncertainty_fc2 = nn.Linear(num_filters // 2, 1)
 
     def forward(self, x):
         batch_size, _, H, W = x.shape
@@ -100,36 +107,55 @@ class PomPomNN(nn.Module):
         y_coords = torch.linspace(-1, 1, H, device=x.device).view(1, 1, H, 1).expand(batch_size, 1, H, W)
         x_with_coords = torch.cat([x, x_coords, y_coords], dim=1)
 
-        # Main Body
+        # 主干网络
         x = self.initial_relu(self.initial_bn(self.initial_conv(x_with_coords)))
         x = self.global_pool_bias_initial(x)
         for block in self.res_blocks:
             x = block(x)
 
-        # Policy Head
+        # --- 各个头的计算 ---
+
+        # 主策略头
         policy = self.policy_relu(self.policy_bn(self.policy_conv(x)))
         policy = self.global_pool_bias_policy(policy)
-        policy_logits = self.policy_fc(policy.view(batch_size, -1))
+        policy = policy.view(policy.size(0), -1)
+        policy_logits = self.policy_fc(policy)
 
-        # Value Head
-        value_features = self.value_relu(self.value_bn(self.value_conv(x)))
-        value_features = self.global_pool_bias_value(value_features)
-        value = F.relu(self.value_fc1(value_features.view(batch_size, -1)))
+        # 价值头
+        value = self.value_relu(self.value_bn(self.value_conv(x)))
+        value = self.global_pool_bias_value(value)
+        value = value.view(value.size(0), -1)
+        value = F.relu(self.value_fc1(value))
         value_output = torch.tanh(self.value_fc2(value))
 
-        # Ownership Head
-        ownership = self.ownership_bn(self.ownership_conv(x))
+        # 所有权头
+        ownership = self.ownership_conv(x)
+        ownership = self.ownership_bn(ownership)
         ownership_output = torch.tanh(ownership).squeeze(1)
 
-        # Soft Policy Head
+        # 软策略头的前向传播
         soft_policy = self.soft_policy_relu(self.soft_policy_bn(self.soft_policy_conv(x)))
         soft_policy = self.soft_global_pool_bias_policy(soft_policy)
-        soft_policy_logits = self.soft_policy_fc(soft_policy.view(batch_size, -1))
+        soft_policy = soft_policy.view(soft_policy.size(0), -1)
+        soft_policy_logits = self.soft_policy_fc(soft_policy)
 
-        # --- NEW: Uncertainty Head Forward Pass ---
-        uncertainty_features = self.uncertainty_relu(self.uncertainty_bn(self.uncertainty_conv(x)))
-        uncertainty = F.relu(self.uncertainty_fc1(uncertainty_features.view(batch_size, -1)))
-        # Use softplus to ensure the output is always non-negative, representing squared error.
-        uncertainty_output = F.softplus(self.uncertainty_fc2(uncertainty))
+        # 返回所有四个头的输出
+        return policy_logits, value_output, ownership_output, soft_policy_logits
 
-        return policy_logits, value_output, ownership_output, soft_policy_logits, uncertainty_output
+
+# --- 示例用法 ---
+if __name__ == "__main__":
+    dummy_input = torch.randn(2, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+
+    model = PomPomNN()
+    model.eval()
+
+    with torch.no_grad():
+        policy_logits, value, ownership, soft_policy_logits = model(dummy_input)
+
+    print("神经网络模型已定义。")
+    print(f"输入张量形状 (仅内容通道): {dummy_input.shape}")
+    print(f"策略头输出 (Logits) 形状: {policy_logits.shape}")
+    print(f"价值头输出形状: {value.shape}")
+    print(f"所有权头输出形状: {ownership.shape}")
+    print(f"软策略头输出 (Logits) 形状: {soft_policy_logits.shape}")
