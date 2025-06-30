@@ -1,211 +1,310 @@
+#include "puct.h"
 #include "game.h"
-#include <cstring>
+
+#include <vector>
+#include <cmath>
+#include <memory>
+#include <mutex>
+#include <random>
+#include <algorithm>
 #include <iostream>
 
-// For pop_count optimization
-#if defined(__GNUC__) || defined(__clang__)
-#include <x86intrin.h>
-#endif
-#if defined(_MSC_VER)
-#include <intrin.h>
-#endif
+// --- MCTS 核心参数 ---
+const float C_PUCT = 1.25f;
+const float DIRICHLET_ALPHA_SCALING = 10.83f;
+const float DIRICHLET_EPSILON = 0.25f;
+const float MIN_UNCERTAINTY_WEIGHT = 0.1f;
 
+// --- MCTS 节点结构 ---
+struct Node {
+    Node* parent = nullptr;
+    std::vector<std::unique_ptr<Node>> children;
+
+    Board board_state;
+    int move_leading_to_this_node = -1;
+    bool is_expanded = false;
+
+    double visit_count = 0.0;
+    int unweighted_visit_count = 0;
+
+    double total_action_value = 0.0;
+    float prior_probability = 0.0;
+
+    Node(const Board& board, float prior) : prior_probability(prior) {
+        copy_board(&board, &board_state);
+    }
+
+    double get_puct_value(double total_parent_visits) const {
+        double q_value = (visit_count > 1e-6) ? (-total_action_value / visit_count) : 0.0;
+        double u_value = C_PUCT * prior_probability * (std::sqrt(total_parent_visits) / (1.0 + visit_count));
+        return q_value + u_value;
+    }
+};
+
+// --- 单个游戏 MCTS 搜索器 ---
+class MCTSSearch {
+public:
+    std::unique_ptr<Node> root;
+    int game_index;
+    Node* pending_evaluation_leaf = nullptr;
+    std::mt19937 rng;
+    bool use_dirichlet_noise = true;
+
+    MCTSSearch(int index) : game_index(index) {
+        std::random_device rd;
+        rng.seed(rd());
+        Board b;
+        init_board(&b);
+        root = std::make_unique<Node>(b, 1.0f);
+    }
+
+    void reset(const Board* new_board_state) {
+        root = std::make_unique<Node>(*new_board_state, 1.0f);
+        pending_evaluation_leaf = nullptr;
+    }
+
+    void run_simulation() {
+        if (pending_evaluation_leaf) return;
+        Node* leaf = select_leaf();
+        if (get_game_result(&leaf->board_state) != IN_PROGRESS) {
+            int raw_score_diff = get_score_diff(&leaf->board_state);
+            float normalized_score = static_cast<float>(raw_score_diff) / static_cast<float>(BOARD_SQUARES);
+            float value_for_leaf_player = (leaf->board_state.current_player == BLACK) ? normalized_score : -normalized_score;
+            backpropagate(leaf, value_for_leaf_player, 1.0f);
+        }
+        else {
+            pending_evaluation_leaf = leaf;
+        }
+    }
+
+    void add_dirichlet_noise(std::vector<std::pair<int, float>>& priors) {
+        if (priors.empty()) return;
+        float dynamic_alpha = DIRICHLET_ALPHA_SCALING / priors.size();
+        std::gamma_distribution<float> gamma(dynamic_alpha, 1.0f);
+        std::vector<float> noise;
+        float noise_sum = 0.0f;
+        for (size_t i = 0; i < priors.size(); ++i) {
+            float g = gamma(rng);
+            noise.push_back(g);
+            noise_sum += g;
+        }
+        if (noise_sum > 1e-6) {
+            for (size_t i = 0; i < priors.size(); ++i) {
+                priors[i].second = (1.0f - DIRICHLET_EPSILON) * priors[i].second + DIRICHLET_EPSILON * (noise[i] / noise_sum);
+            }
+        }
+    }
+
+    void expand_and_evaluate(const float* policy, float value, float uncertainty) {
+        if (!pending_evaluation_leaf) return;
+        Node* leaf = pending_evaluation_leaf;
+        pending_evaluation_leaf = nullptr;
+        Bitboards legal_moves = get_legal_moves(&leaf->board_state);
+        std::vector<std::pair<int, float>> priors;
+        for (int sq = 0; sq < BOARD_SQUARES; ++sq) {
+            if (GET_BIT(legal_moves, sq)) {
+                priors.push_back({ sq, policy[sq] });
+            }
+        }
+        if (leaf == root.get() && use_dirichlet_noise) {
+            add_dirichlet_noise(priors);
+        }
+        for (const auto& p : priors) {
+            int sq = p.first;
+            float prior_prob = p.second;
+            Board next_board;
+            copy_board(&leaf->board_state, &next_board);
+            make_move(&next_board, sq);
+            auto new_child = std::make_unique<Node>(next_board, prior_prob);
+            new_child->parent = leaf;
+            new_child->move_leading_to_this_node = sq;
+            leaf->children.push_back(std::move(new_child));
+        }
+        leaf->is_expanded = true;
+        float playout_weight = 1.0f / (MIN_UNCERTAINTY_WEIGHT + uncertainty);
+        backpropagate(leaf, value, playout_weight);
+    }
+
+    void backpropagate(Node* leaf, float value, float weight) {
+        Node* current = leaf;
+        float current_value = value;
+        while (current) {
+            current->visit_count += weight;
+            current->unweighted_visit_count++;
+            current->total_action_value += current_value * weight;
+            current_value *= -1.0f;
+            current = current->parent;
+        }
+    }
+
+    Node* select_leaf() {
+        Node* current = root.get();
+        while (current->is_expanded) {
+            if (current->children.empty()) return current;
+            current = get_best_child(current);
+        }
+        return current;
+    }
+
+    Node* get_best_child(Node* parent) {
+        double max_puct = -1e9;
+        Node* best_child = nullptr;
+        for (const auto& child : parent->children) {
+            double puct_val = child->get_puct_value(parent->visit_count);
+            if (puct_val > max_puct) {
+                max_puct = puct_val;
+                best_child = child.get();
+            }
+        }
+        return best_child;
+    }
+
+    void get_policy(float* policy_buffer) {
+        std::fill(policy_buffer, policy_buffer + BOARD_SQUARES, 0.0f);
+        if (!root || root->children.empty()) return;
+        double total_visits = root->unweighted_visit_count;
+        if (total_visits > 0) {
+            for (const auto& child : root->children) {
+                policy_buffer[child->move_leading_to_this_node] = static_cast<float>(child->unweighted_visit_count / total_visits);
+            }
+        }
+    }
+
+    void make_move_on_tree(int square) {
+        std::unique_ptr<Node> new_root = nullptr;
+        for (auto& child : root->children) {
+            if (child->move_leading_to_this_node == square) {
+                new_root = std::move(child);
+                break;
+            }
+        }
+        if (new_root) {
+            root = std::move(new_root);
+            root->parent = nullptr;
+        }
+        else {
+            Board new_board;
+            copy_board(&root->board_state, &new_board);
+            if (make_move(&new_board, square)) {
+                root = std::make_unique<Node>(new_board, 1.0f);
+            }
+        }
+        pending_evaluation_leaf = nullptr;
+    }
+};
+
+class MCTSManager {
+public:
+    std::vector<std::unique_ptr<MCTSSearch>> searches;
+    std::mutex mtx;
+    MCTSManager(int num_games) {
+        for (int i = 0; i < num_games; ++i) { searches.push_back(std::make_unique<MCTSSearch>(i)); }
+    }
+};
 
 extern "C" {
-
-    int pop_count(const Bitboards* bb) {
-        if (!bb) return 0;
-        // OPTIMIZED: Use compiler intrinsics for popcount, which are much faster.
-#if defined(__GNUC__) || defined(__clang__)
-        return __builtin_popcountll(bb->parts[0]) + __builtin_popcountll(bb->parts[1]);
-#elif defined(_MSC_VER)
-        return (int)__popcnt64(bb->parts[0]) + (int)__popcnt64(bb->parts[1]);
-#else
-        // Fallback to the classic algorithm if no intrinsic is available.
-        int count = 0;
-        uint64_t p1 = bb->parts[0];
-        uint64_t p2 = bb->parts[1];
-        while (p1) { p1 &= (p1 - 1); count++; }
-        while (p2) { p2 &= (p2 - 1); count++; }
-        return count;
-#endif
+    API void* create_mcts_manager(int num_games) {
+        try { return new MCTSManager(num_games); }
+        catch (const std::bad_alloc&) { return nullptr; }
     }
+    API void destroy_mcts_manager(void* manager_ptr) { delete static_cast<MCTSManager*>(manager_ptr); }
 
-    // NEW: Function to get the raw score difference (Black - White)
-    int get_score_diff(const Board* board) {
-        if (!board) return 0;
-        return pop_count(&board->tiles[BLACK]) - pop_count(&board->tiles[WHITE]);
-    }
-
-    bool is_bit_set(const Bitboards* bb, int sq) {
-        if (!bb) return false;
-        return GET_BIT(*bb, sq) != 0;
-    }
-
-    void init_board(Board* board) {
-        if (!board) return;
-        memset(board, 0, sizeof(Board));
-        board->current_player = BLACK;
-        board->moves_left[BLACK] = TOTAL_MOVES;
-        board->moves_left[WHITE] = TOTAL_MOVES;
-    }
-
-    void copy_board(const Board* src, Board* dest) {
-        if (!src || !dest) return;
-        memcpy(dest, src, sizeof(Board));
-    }
-
-    void print_board(const Board* board) {
-        if (!board) return;
-        std::cout << "  a b c d e f g h i" << std::endl;
-        for (int r = 0; r < BOARD_HEIGHT; ++r) {
-            std::cout << r + 1 << " ";
-            for (int c = 0; c < BOARD_WIDTH; ++c) {
-                int sq = get_sq(r, c);
-                if (GET_BIT(board->pieces[BLACK], sq))      std::cout << "X ";
-                else if (GET_BIT(board->pieces[WHITE], sq)) std::cout << "O ";
-                else if (GET_BIT(board->tiles[BLACK], sq))  std::cout << ". ";
-                else if (GET_BIT(board->tiles[WHITE], sq))  std::cout << "o ";
-                else                                        std::cout << "- ";
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "Player: " << (board->current_player == BLACK ? "Black(X)" : "White(O)")
-            << ", Moves left: B:" << board->moves_left[BLACK]
-            << " W:" << board->moves_left[WHITE] << std::endl;
-    }
-
-    Bitboards get_legal_moves(const Board* board) {
-        Bitboards legal_moves = { 0, 0 };
-        if (!board) return legal_moves;
-
-        Bitboards all_pieces = { 0, 0 };
-        const Bitboards opponent_tiles = board->tiles[1 - board->current_player];
-
-        all_pieces.parts[0] = board->pieces[BLACK].parts[0] | board->pieces[WHITE].parts[0];
-        all_pieces.parts[1] = board->pieces[BLACK].parts[1] | board->pieces[WHITE].parts[1];
-
-        legal_moves.parts[0] = ~all_pieces.parts[0] & ~opponent_tiles.parts[0];
-        legal_moves.parts[1] = ~all_pieces.parts[1] & ~opponent_tiles.parts[1];
-
-        uint64_t mask_part1 = ~0ULL;
-        uint64_t mask_part2 = 0;
-
-        if (BOARD_SQUARES < 64) {
-            mask_part1 = (1ULL << BOARD_SQUARES) - 1;
-        }
-        else if (BOARD_SQUARES > 64) {
-            int bits_in_part2 = BOARD_SQUARES - 64;
-            if (bits_in_part2 > 0 && bits_in_part2 < 64) {
-                mask_part2 = (1ULL << bits_in_part2) - 1;
-            }
-            else if (bits_in_part2 >= 64) {
-                mask_part2 = ~0ULL;
-            }
-        }
-
-        legal_moves.parts[0] &= mask_part1;
-        legal_moves.parts[1] &= mask_part2;
-
-        return legal_moves;
-    }
-
-    enum GameResult get_game_result(const Board* board) {
-        if (!board) return DRAW;
-        if (board->moves_left[BLACK] <= 0 && board->moves_left[WHITE] <= 0) {
-            int score_diff = get_score_diff(board);
-            if (score_diff > 0) return BLACK_WIN;
-            if (score_diff < 0) return WHITE_WIN;
-            return DRAW;
-        }
-
-        Bitboards legal_moves = get_legal_moves(board);
-        if (legal_moves.parts[0] == 0 && legal_moves.parts[1] == 0) {
-            return (board->current_player == BLACK) ? WHITE_WIN : BLACK_WIN;
-        }
-        return IN_PROGRESS;
-    }
-
-    bool make_move(Board* board, int square) {
-        if (!board || square < 0 || square >= BOARD_SQUARES) return false;
-
-        Bitboards legal_moves = get_legal_moves(board);
-        if (!GET_BIT(legal_moves, square)) {
-            return false;
-        }
-
-        int player = board->current_player;
-        int opponent = 1 - player;
-
-        SET_BIT(board->pieces[player], square);
-
-        Bitboards elimination_mask = { 0, 0 };
-        Bitboards coloring_lines_mask = { 0, 0 };
-        bool elimination_occurred = false;
-
-        int dr[] = { 0, 1, -1, 1 };
-        int dc[] = { 1, 0, 1, 1 };
-
-        for (int i = 0; i < 4; ++i) {
-            int line_len = 1;
-            Bitboards current_line = { 0, 0 };
-            SET_BIT(current_line, square);
-
-            for (int dir = -1; dir <= 1; dir += 2) {
-                for (int k = 1; k < BOARD_WIDTH; ++k) {
-                    int r = get_row(square) + dir * k * dr[i];
-                    int c = get_col(square) + dir * k * dc[i];
-                    if (is_valid(r, c) && GET_BIT(board->pieces[player], get_sq(r, c))) {
-                        line_len++;
-                        SET_BIT(current_line, get_sq(r, c));
-                    }
-                    else {
-                        break;
-                    }
+    API int mcts_run_simulations_and_get_requests(void* manager_ptr, Board* board_requests_buffer, int* request_indices_buffer, int max_requests) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        int requests_count = 0;
+        for (auto& search : manager->searches) {
+            if (requests_count >= max_requests) break;
+            if (get_game_result(&search->root->board_state) != IN_PROGRESS) continue;
+            if (!search->pending_evaluation_leaf) {
+                search->run_simulation();
+                if (search->pending_evaluation_leaf) {
+                    copy_board(&search->pending_evaluation_leaf->board_state, &board_requests_buffer[requests_count]);
+                    request_indices_buffer[requests_count] = search->game_index;
+                    requests_count++;
                 }
             }
+        }
+        return requests_count;
+    }
 
-            if (line_len >= 3) {
-                elimination_occurred = true;
-                elimination_mask.parts[0] |= current_line.parts[0];
-                elimination_mask.parts[1] |= current_line.parts[1];
-                SET_BIT(coloring_lines_mask, i);
+    API void mcts_feed_results(void* manager_ptr, const float* policies, const float* values, const float* uncertainties) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        int result_idx = 0;
+        for (auto& search : manager->searches) {
+            if (search->pending_evaluation_leaf) {
+                search->expand_and_evaluate(&policies[result_idx * BOARD_SQUARES], values[result_idx], uncertainties[result_idx]);
+                result_idx++;
             }
         }
+    }
 
-        if (elimination_occurred) {
-            board->pieces[player].parts[0] &= ~elimination_mask.parts[0];
-            board->pieces[player].parts[1] &= ~elimination_mask.parts[1];
-
-            Bitboards final_color_mask = { 0, 0 };
-            final_color_mask.parts[0] = elimination_mask.parts[0];
-            final_color_mask.parts[1] = elimination_mask.parts[1];
-
-            for (int i = 0; i < 4; ++i) {
-                if (GET_BIT(coloring_lines_mask, i)) {
-                    for (int dir = -1; dir <= 1; dir += 2) {
-                        for (int k = 1; k < BOARD_WIDTH; ++k) {
-                            int r = get_row(square) + dir * k * dr[i];
-                            int c = get_col(square) + dir * k * dc[i];
-                            if (!is_valid(r, c)) break;
-                            int ray_sq = get_sq(r, c);
-                            if (GET_BIT(board->pieces[opponent], ray_sq)) break;
-                            SET_BIT(final_color_mask, ray_sq);
-                        }
-                    }
-                }
-            }
-
-            board->tiles[player].parts[0] |= final_color_mask.parts[0];
-            board->tiles[player].parts[1] |= final_color_mask.parts[1];
-            board->tiles[opponent].parts[0] &= ~final_color_mask.parts[0];
-            board->tiles[opponent].parts[1] &= ~final_color_mask.parts[1];
-        }
-
-        board->moves_left[player]--;
-        board->current_player = opponent;
-
+    API bool mcts_get_policy(void* manager_ptr, int game_index, float* policy_buffer) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return false;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        manager->searches[game_index]->get_policy(policy_buffer);
         return true;
     }
 
-} // extern "C"
+    API void mcts_make_move(void* manager_ptr, int game_index, int square) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        manager->searches[game_index]->make_move_on_tree(square);
+    }
+
+    API bool mcts_is_game_over(void* manager_ptr, int game_index) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return true;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        return get_game_result(&manager->searches[game_index]->root->board_state) != IN_PROGRESS;
+    }
+
+    API int mcts_get_unweighted_simulations_done(void* manager_ptr, int game_index) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return 0;
+        return manager->searches[game_index]->root->unweighted_visit_count;
+    }
+
+    API const Board* mcts_get_board_state(void* manager_ptr, int game_index) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return nullptr;
+        return &manager->searches[game_index]->root.get()->board_state;
+    }
+
+    API int mcts_get_analysis_data(void* manager_ptr, int game_index, int* moves_buffer, float* q_values_buffer, int* visit_counts_buffer, float* puct_scores_buffer, int buffer_size) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return 0;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        Node* root = manager->searches[game_index]->root.get();
+        if (!root || !root->is_expanded) return 0;
+
+        int count = 0;
+        double parent_visits = root->visit_count;
+        for (const auto& child : root->children) {
+            if (count >= buffer_size) break;
+            moves_buffer[count] = child->move_leading_to_this_node;
+            q_values_buffer[count] = (child->visit_count > 1e-6) ? static_cast<float>(-child->total_action_value / child->visit_count) : 0.0f;
+            visit_counts_buffer[count] = child->unweighted_visit_count;
+            puct_scores_buffer[count] = static_cast<float>(child->get_puct_value(parent_visits));
+            count++;
+        }
+        return count;
+    }
+
+    API void mcts_reset_for_analysis(void* manager_ptr, int game_index, const Board* board) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        manager->searches[game_index]->reset(board);
+    }
+
+    API void mcts_set_noise_enabled(void* manager_ptr, int game_index, bool enabled) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || game_index >= manager->searches.size()) return;
+        std::lock_guard<std::mutex> lock(manager->mtx);
+        manager->searches[game_index]->use_dirichlet_noise = enabled;
+    }
+}
