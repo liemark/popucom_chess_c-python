@@ -10,6 +10,7 @@ import glob
 import pickle
 import time
 import argparse
+import gzip  # 导入gzip库
 
 from popucom_nn_model import PomPomNN
 
@@ -46,14 +47,16 @@ class PopucomDataset(Dataset):
         return state, policy, value, ownership
 
 
-def load_data(data_dir, max_files=50):
-    """从目录加载多个 .pkl 数据文件"""
+def load_data(data_dir, max_files=100):
+    """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
-    file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl")), key=os.path.getmtime, reverse=True)
-    print(f"找到 {len(file_paths)} 个数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
+    # 2. 修改glob模式以查找 .pkl.gz 文件
+    file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
+    print(f"找到 {len(file_paths)} 个压缩数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
     for file_path in file_paths[:max_files]:
         try:
-            with open(file_path, 'rb') as f:
+            # 3. 使用 gzip.open 来读取文件
+            with gzip.open(file_path, 'rb') as f:
                 data = pickle.load(f)
                 all_data.extend(data)
         except Exception as e:
@@ -66,7 +69,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="训练 PomPomNN 模型")
     parser.add_argument('--data-dir', type=str, default='self_play_data', help='自对弈数据所在的目录')
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
-    parser.add_argument('--epochs', type=int, default=6, help='训练的总轮数')
+    parser.add_argument('--epochs', type=int, default=5, help='训练的总轮数')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
     parser.add_argument('--lr', type=float, default=1e-5, help='学习率')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
@@ -75,7 +78,6 @@ def get_args():
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
     parser.add_argument('--ownership-weight', type=float, default=1.0, help='所有权损失的权重')
-    # 辅助软策略目标的权重
     parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重 (KataGo 推荐)')
 
     parser.add_argument('--no-augment', action='store_true', help='如果设置此项，则禁用数据增强')
@@ -120,7 +122,6 @@ def train_model(args):
 
     start_time = time.time()
     for epoch in range(args.epochs):
-        # 初始化所有损失的累加器
         losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'ownership': 0.0, 'soft_policy': 0.0}
 
         for states, target_policies, target_values, target_ownerships in dataloader:
@@ -131,16 +132,13 @@ def train_model(args):
 
             optimizer.zero_grad()
 
-            # 模型现在返回四个值
             pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
 
-            # --- 计算软策略目标 ---
-            soft_policy_temp = 4.0  # KataGo 使用的软化温度
-            target_policies_soft = target_policies + 1e-8  # 避免 log(0)
+            soft_policy_temp = 4.0
+            target_policies_soft = target_policies + 1e-8
             target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
             target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
 
-            # --- 计算所有损失 ---
             loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
             loss_value = value_loss_fn(pred_values, target_values)
             loss_ownership = ownership_loss_fn(pred_ownerships, target_ownerships)
@@ -151,7 +149,6 @@ def train_model(args):
                     args.ownership_weight * loss_ownership +
                     args.soft_policy_weight * loss_soft_policy)
 
-            # 累加损失
             losses['total'] += loss.item()
             losses['policy'] += loss_policy.item()
             losses['value'] += loss_value.item()
@@ -161,7 +158,6 @@ def train_model(args):
             loss.backward()
             optimizer.step()
 
-        # 打印每个 epoch 的平均损失
         num_batches = len(dataloader)
         print(f"Epoch {epoch + 1}/{args.epochs} | "
               f"总损失: {losses['total'] / num_batches:.4f} | "
