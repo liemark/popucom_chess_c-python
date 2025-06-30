@@ -10,7 +10,6 @@ class Arena;
 extern "C" {
 #endif
 
-	// ... (其他函数声明保持不变) ...
 	API void* create_mcts_manager(int num_games);
 	API void destroy_mcts_manager(void* manager_ptr);
 	API int mcts_run_simulations_and_get_requests(void* manager_ptr, Board* board_requests_buffer, int* request_indices_buffer, int max_requests);
@@ -23,10 +22,8 @@ extern "C" {
 	API int mcts_get_simulations_done(void* manager_ptr, int game_index);
 	API int mcts_get_analysis_data(void* manager_ptr, int game_index, int* moves_buffer, float* q_values_buffer, int* visit_counts_buffer, float* puct_scores_buffer, int buffer_size);
 	API void mcts_reset_for_analysis(void* manager_ptr, int game_index, const Board* board);
-
-	// NEW: API function to enable or disable Dirichlet noise for a specific game instance.
 	API void mcts_set_noise_enabled(void* manager_ptr, int game_index, bool enabled);
-
+	API int mcts_get_unweighted_simulations_done(void* manager_ptr, int game_index);
 
 #ifdef __cplusplus
 }
