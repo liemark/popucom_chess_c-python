@@ -8,22 +8,18 @@ import time
 import ctypes
 import platform
 
-# --- 导入我们自己的模块 ---
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
 from self_play_worker import MAX_MOVES_PER_PLAYER
 
-
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
-
-
 class Board(ctypes.Structure):
     _fields_ = [
         ("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
         ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)
     ]
 
-
+# This dictionary should now match the exported functions from your C++ code exactly
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
     "copy_board": (None, [ctypes.POINTER(Board), ctypes.POINTER(Board)]),
@@ -34,20 +30,17 @@ C_FUNCTIONS = {
     "pop_count": (ctypes.c_int, [ctypes.POINTER(Bitboards)]),
     "create_mcts_manager": (ctypes.c_void_p, [ctypes.c_int]),
     "destroy_mcts_manager": (None, [ctypes.c_void_p]),
-    "mcts_run_simulations_and_get_requests": (
-    ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(Board), ctypes.POINTER(ctypes.c_int), ctypes.c_int]),
-    "mcts_feed_results": (None, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
-                                 ctypes.POINTER(ctypes.c_float)]),
+    "mcts_run_simulations_and_get_requests": (ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(Board), ctypes.POINTER(ctypes.c_int), ctypes.c_int]),
+    "mcts_feed_results": (None, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]),
     "mcts_get_policy": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
     "mcts_make_move": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
-    "mcts_get_simulations_done": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
-    "mcts_get_analysis_data": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int),
-                                              ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_int),
-                                              ctypes.POINTER(ctypes.c_float), ctypes.c_int]),
+    "mcts_is_game_over": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int]),
+    "mcts_get_unweighted_simulations_done": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
+    "mcts_get_board_state": (ctypes.POINTER(Board), [ctypes.c_void_p, ctypes.c_int]),
+    "mcts_get_analysis_data": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float), ctypes.c_int]),
     "mcts_reset_for_analysis": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(Board)]),
     "mcts_set_noise_enabled": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.c_bool]),
 }
-
 
 def setup_c_library():
     lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
@@ -61,11 +54,8 @@ def setup_c_library():
             print(f"警告: 在C库中未找到函数 '{func_name}'")
     return c_lib
 
-
-try:
-    c_lib = setup_c_library()
-except FileNotFoundError as e:
-    messagebox.showerror("库加载错误", str(e)); exit()
+try: c_lib = setup_c_library()
+except FileNotFoundError as e: messagebox.showerror("库加载错误", str(e)); exit()
 
 # --- 全局常量 ---
 MODEL_PATH, BLACK_PLAYER, WHITE_PLAYER = "model.pth", 0, 1
@@ -78,7 +68,7 @@ BLACK_PIECE_COLOR, WHITE_PIECE_COLOR = "red", "green"
 class PomPomGUI:
     def __init__(self, master):
         self.master = master
-        master.title("泡姆棋")
+        master.title("泡姆棋 (C++ 内核, 分数版)")
         self.cell_size, self.canvas_width, self.canvas_height = 120, BOARD_SIZE * 120, BOARD_SIZE * 120
         self.game_running, self.game_mode, self.human_player_choice = False, tk.StringVar(
             value="human_vs_ai"), tk.StringVar(value="human_black")
@@ -87,8 +77,7 @@ class PomPomGUI:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.ai_model, self.mcts_manager_gui, self.ai_thread = self._load_ai_model(), c_lib.create_mcts_manager(1), None
         self.analysis_data, self.analysis_in_progress = {}, False
-        self.best_puct_move, self.best_visit_move = None, None
-        self.root_uncertainty = None  # NEW: To store uncertainty of the current position
+        self.best_puct_move, self.best_visit_move, self.root_uncertainty = None, None, None
 
         self._setup_gui()
         self._reset_and_start_new_game()
@@ -120,15 +109,15 @@ class PomPomGUI:
         ai_frame = tk.LabelFrame(control_frame, text="AI 设置", padx=5, pady=5)
         ai_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         tk.Label(ai_frame, text="搜索模拟次数:").grid(row=0, column=0, sticky='w')
-        self.ai_sims_slider = Scale(ai_frame, from_=100, to=40000, orient=tk.HORIZONTAL, resolution=100, length=200);
-        self.ai_sims_slider.set(8000);
+        self.ai_sims_slider = Scale(ai_frame, from_=50, to=5000, orient=tk.HORIZONTAL, resolution=50, length=200);
+        self.ai_sims_slider.set(800);
         self.ai_sims_slider.grid(row=0, column=1, sticky='ew')
         tk.Label(ai_frame, text="落子温度:").grid(row=1, column=0, sticky='w')
         self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200);
-        self.temperature_slider.set(0);
+        self.temperature_slider.set(0.1);
         self.temperature_slider.grid(row=1, column=1, sticky='ew')
 
-        self.noise_enabled_var = tk.BooleanVar(value=True)
+        self.noise_enabled_var = tk.BooleanVar(value=False)
         noise_check = tk.Checkbutton(ai_frame, text="开启探索性噪声 (仅AI)", variable=self.noise_enabled_var)
         noise_check.grid(row=2, column=0, columnspan=2, sticky='w')
 
@@ -223,7 +212,7 @@ class PomPomGUI:
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 sq = r * BOARD_SIZE + c;
-                center_x, center_y, radius = c * self.cell_size + 59.5, r * self.cell_size + 59.5, 55
+                center_x, center_y, radius = c * self.cell_size + self.cell_size / 2, r * self.cell_size + self.cell_size / 2, self.cell_size / 2 - 5
                 p_color = None
                 if (self.board_c.pieces[BLACK_PLAYER].parts[sq // 64] >> (sq % 64)) & 1:
                     p_color = BLACK_PIECE_COLOR
@@ -238,7 +227,7 @@ class PomPomGUI:
         if self.analysis_data:
             fnt = font.Font(family='Helvetica', size=max(8, int(self.cell_size / 16)), weight='bold')
             for (r, c), data in self.analysis_data.items():
-                center_x, center_y = c * self.cell_size + 59.5, r * self.cell_size + 59.5
+                center_x, center_y = c * self.cell_size + self.cell_size / 2, r * self.cell_size + self.cell_size / 2
                 score_lead = data['q'] * BOARD_SIZE * BOARD_SIZE;
                 puct_score = data['puct']
                 score_text = f"领先: {score_lead:+.1f}";
@@ -272,11 +261,9 @@ class PomPomGUI:
             self.status_label.config(text="游戏结束", fg="black")
 
         score_diff = c_lib.get_score_diff(ctypes.byref(self.board_c))
-        # NEW: Add uncertainty display
         uncertainty_text = ""
         if self.root_uncertainty is not None:
             uncertainty_text = f" | AI判断不确定性: {self.root_uncertainty:.4f}"
-
         self.moves_label.config(
             text=f"红方剩余: {self.board_c.moves_left[0]} | 绿方剩余: {self.board_c.moves_left[1]}\n"
                  f"当前分数 (红-绿): {score_diff}{uncertainty_text}")
@@ -328,7 +315,6 @@ class PomPomGUI:
         sims = self.ai_sims_slider.get();
         c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
 
-        # NEW: Perform one evaluation at the root to get the uncertainty
         tensor = self._board_to_tensor(self.board_c)
         input_batch = torch.from_numpy(np.array([tensor])).to(self.device)
         with torch.no_grad():
@@ -351,7 +337,7 @@ class PomPomGUI:
             self.draw_board();
             self._toggle_ui_elements(True);
             self.analyze_button.config(text="分析")
-            self._update_status_labels()  # Refresh status to show uncertainty
+            self._update_status_labels()
 
         self.master.after(0, update_gui)
 
@@ -381,21 +367,25 @@ class PomPomGUI:
         if self.game_running and move != -1: self.master.after(0, self._process_move, move)
 
     def _run_mcts_loop(self, num_sims, is_analysis=False):
-        while c_lib.mcts_get_simulations_done(self.mcts_manager_gui, 0) < num_sims:
+        # 使用一个健壮的 for 循环来保证真实的模拟次数
+        for _ in range(num_sims):
             if not self.game_running and not is_analysis: return
+
             boards, indices = (Board * 1)(), (ctypes.c_int * 1)()
-            if c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager_gui, boards, indices, 1) > 0:
+            num_reqs = c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager_gui, boards, indices, 1)
+
+            if num_reqs > 0:
                 tensor = self._board_to_tensor(boards[0])
                 input_batch = torch.from_numpy(np.array([tensor])).to(self.device)
                 with torch.no_grad():
                     p_logits, val_raw, _, _, uncertainties_raw = self.ai_model(input_batch)
                     policy = torch.softmax(p_logits, dim=1).cpu().numpy()
-                    val = val_raw.item()
-                    uncertainties = uncertainties_raw.cpu().numpy().flatten()
+                    val = val_raw.cpu().numpy()
+                    uncertainties = uncertainties_raw.cpu().numpy()
                 c_lib.mcts_feed_results(
                     self.mcts_manager_gui,
                     np.ascontiguousarray(policy, dtype=np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    np.ascontiguousarray([val], dtype=np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    np.ascontiguousarray(val, dtype=np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                     np.ascontiguousarray(uncertainties, dtype=np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
                 )
 
