@@ -8,16 +8,21 @@ import time
 import ctypes
 import platform
 
+# --- 导入我们自己的模块 ---
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
 from self_play_worker import MAX_MOVES_PER_PLAYER
 
+
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
+
+
 class Board(ctypes.Structure):
     _fields_ = [
         ("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
         ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)
     ]
+
 
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
@@ -73,7 +78,7 @@ BLACK_PIECE_COLOR, WHITE_PIECE_COLOR = "red", "green"
 class PomPomGUI:
     def __init__(self, master):
         self.master = master
-        master.title("泡姆棋 (C++ 内核, 分数版)")
+        master.title("泡姆棋")
         self.cell_size, self.canvas_width, self.canvas_height = 120, BOARD_SIZE * 120, BOARD_SIZE * 120
         self.game_running, self.game_mode, self.human_player_choice = False, tk.StringVar(
             value="human_vs_ai"), tk.StringVar(value="human_black")
@@ -115,15 +120,15 @@ class PomPomGUI:
         ai_frame = tk.LabelFrame(control_frame, text="AI 设置", padx=5, pady=5)
         ai_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         tk.Label(ai_frame, text="搜索模拟次数:").grid(row=0, column=0, sticky='w')
-        self.ai_sims_slider = Scale(ai_frame, from_=50, to=5000, orient=tk.HORIZONTAL, resolution=50, length=200);
-        self.ai_sims_slider.set(800);
+        self.ai_sims_slider = Scale(ai_frame, from_=100, to=40000, orient=tk.HORIZONTAL, resolution=100, length=200);
+        self.ai_sims_slider.set(8000);
         self.ai_sims_slider.grid(row=0, column=1, sticky='ew')
         tk.Label(ai_frame, text="落子温度:").grid(row=1, column=0, sticky='w')
         self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200);
-        self.temperature_slider.set(0.1);
+        self.temperature_slider.set(0);
         self.temperature_slider.grid(row=1, column=1, sticky='ew')
 
-        self.noise_enabled_var = tk.BooleanVar(value=False)
+        self.noise_enabled_var = tk.BooleanVar(value=True)
         noise_check = tk.Checkbutton(ai_frame, text="开启探索性噪声 (仅AI)", variable=self.noise_enabled_var)
         noise_check.grid(row=2, column=0, columnspan=2, sticky='w')
 
