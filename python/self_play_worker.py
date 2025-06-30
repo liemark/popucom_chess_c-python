@@ -8,18 +8,15 @@ import torch
 
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
 
-# popucom_nn_interface.py 也有，但在这直接定义了
 MAX_MOVES_PER_PLAYER = 25
 
 # --- 全局配置 ---
-MCTS_SIMULATIONS = 2000 # 改高点
+MCTS_SIMULATIONS = 400
 NUM_PARALLEL_GAMES = 128
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
 DATA_DIR = "self_play_data"
 TOTAL_GAME_CYCLES = 6
-
-# --- 温度参数 ---
 TEMPERATURE_MOVE_SELECTION = 1.0
 TEMPERATURE_DECAY_MOVES = 20
 TEMPERATURE_END = 0.1
@@ -35,8 +32,7 @@ class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", 
 
 def setup_c_library():
     lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
-    if not os.path.exists(lib_name):
-        raise FileNotFoundError(f"未找到C库 '{lib_name}'。请重新编译C代码。")
+    if not os.path.exists(lib_name): raise FileNotFoundError(f"未找到C库 '{lib_name}'")
     c_lib = ctypes.CDLL(os.path.abspath(lib_name))
 
     func_defs = {
@@ -49,11 +45,8 @@ def setup_c_library():
         "mcts_get_policy": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
         "mcts_make_move": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
         "mcts_is_game_over": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int]),
-        "mcts_get_final_value": (ctypes.c_float, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
-        # --- FIX: Corrected restype and argtypes for this function ---
+        "mcts_get_unweighted_simulations_done": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
         "mcts_get_board_state": (ctypes.POINTER(Board), [ctypes.c_void_p, ctypes.c_int]),
-        "mcts_get_simulations_done": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
-        "pop_count": (ctypes.c_int, [ctypes.POINTER(Bitboards)]),
         "get_score_diff": (ctypes.c_int, [ctypes.POINTER(Board)])
     }
 
@@ -62,7 +55,7 @@ def setup_c_library():
             func = getattr(c_lib, name)
             func.restype, func.argtypes = restype, argtypes
         else:
-            print(f"警告: C库中未找到函数 '{name}'。")
+            print(f"警告: C库中未找到函数 '{name}'")
     return c_lib
 
 
@@ -76,12 +69,103 @@ class GameBatchRunner:
         self.model = model.to(self.device).eval()
         self.mcts_manager = c_lib.create_mcts_manager(num_games)
         if not self.mcts_manager:
-            print("\nFATAL ERROR: Failed to create MCTS manager in C++ library.")
-            print("This is most likely due to an 'out of memory' error.")
+            print("\nFATAL ERROR: MCTS manager creation failed (out of memory?).")
             exit(1)
         self.game_histories = [[] for _ in range(num_games)]
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
+
+    def _run_mcts_for_games(self, game_indices, num_sims):
+        for i in range(num_sims):
+            if not self.active_games: break
+
+            board_buffer = (Board * len(game_indices))()
+            request_indices_buffer = (ctypes.c_int * len(game_indices))()
+            num_requests = c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager, board_buffer,
+                                                                       request_indices_buffer, len(game_indices))
+
+            if num_requests > 0:
+                batch_tensors = [self.board_to_tensor(board_buffer[j]) for j in range(num_requests)]
+                input_batch = torch.from_numpy(np.array(batch_tensors)).to(self.device)
+                with torch.no_grad():
+                    policies_logits, values_raw, _, _, uncertainties_raw = self.model(input_batch)
+                    policies = torch.softmax(policies_logits, dim=1).cpu().numpy()
+                    values = values_raw.cpu().numpy()
+                    uncertainties = uncertainties_raw.cpu().numpy()
+                c_lib.mcts_feed_results(
+                    self.mcts_manager,
+                    policies.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    uncertainties.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                )
+
+    def run(self):
+        while self.active_games:
+            self._run_mcts_for_games(self.active_games, MCTS_SIMULATIONS)
+
+            policy_buffer = (ctypes.c_float * (BOARD_SIZE * BOARD_SIZE))()
+            for game_idx in list(self.active_games):
+                if c_lib.mcts_get_unweighted_simulations_done(self.mcts_manager, game_idx) >= MCTS_SIMULATIONS:
+                    c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
+                    policy_np = np.ctypeslib.as_array(policy_buffer).copy()
+
+                    board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
+                    current_player = board_state_ptr.contents.current_player
+                    state_tensor = self.board_to_tensor(board_state_ptr.contents)
+                    self.game_histories[game_idx].append((state_tensor, policy_np, current_player))
+
+                    # --- FIX: Robust move selection logic ---
+                    move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
+                                                                            game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
+                    if move_selection_temp > 0:
+                        move_probs = policy_np ** (1.0 / move_selection_temp)
+                    else:
+                        move_probs = np.zeros_like(policy_np)
+                        if np.sum(policy_np) > 0:
+                            move_probs[np.argmax(policy_np)] = 1.0
+
+                    sum_probs = np.sum(move_probs)
+                    if sum_probs > 1e-8:
+                        # This is the normal path: normalize probabilities and choose a move
+                        move_probs /= sum_probs
+                        move = np.random.choice(range(BOARD_SIZE * BOARD_SIZE), p=move_probs)
+                    else:
+                        # This path is taken if no legal moves exist or policy is all zero.
+                        # We safely remove the game and continue to the next one.
+                        if game_idx in self.active_games:
+                            self.active_games.remove(game_idx)
+                        continue
+
+                    c_lib.mcts_make_move(self.mcts_manager, game_idx, int(move))
+                    self.move_counts[game_idx] += 1
+
+                    if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
+                        if game_idx in self.active_games:
+                            self.active_games.remove(game_idx)
+
+        print("所有并行游戏已完成。")
+        all_training_data = []
+        for game_idx in range(self.num_games):
+            final_board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
+            if not final_board_state_ptr: continue
+            raw_score_diff = c_lib.get_score_diff(final_board_state_ptr)
+
+            for state_tensor, policy, player_at_step in self.game_histories[game_idx]:
+                normalized_score = float(raw_score_diff) / (BOARD_SIZE * BOARD_SIZE)
+                final_value = normalized_score if player_at_step == 0 else -normalized_score
+                ownership_target = self.calculate_ownership_target(final_board_state_ptr.contents)
+                all_training_data.append((state_tensor, policy, final_value, ownership_target))
+
+        if all_training_data:
+            if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
+            filename = os.path.join(DATA_DIR, f"batch_{int(time.time())}.pkl")
+            with open(filename, 'wb') as f:
+                pickle.dump(all_training_data, f)
+            print(f"批处理完成, {len(all_training_data)} 条数据已保存至 {filename}")
+
+    def __del__(self):
+        if hasattr(self, 'mcts_manager') and self.mcts_manager:
+            c_lib.destroy_mcts_manager(self.mcts_manager)
 
     def board_to_tensor(self, board_c: Board) -> np.ndarray:
         tensor = np.zeros((NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
@@ -118,86 +202,6 @@ class GameBatchRunner:
             elif (final_board_c.tiles[1].parts[sq // 64] >> (sq % 64)) & 1:
                 ownership[r, c] = -1.0
         return ownership
-
-    def run(self):
-        while self.active_games:
-            try:
-                board_buffer = (Board * MAX_BATCH_SIZE)()
-                request_indices = (ctypes.c_int * MAX_BATCH_SIZE)()
-                num_requests = c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager, board_buffer,
-                                                                           request_indices, MAX_BATCH_SIZE)
-                if num_requests > 0:
-                    batch_tensors = [self.board_to_tensor(board_buffer[i]) for i in range(num_requests)]
-                    input_batch = torch.from_numpy(np.array(batch_tensors)).to(self.device)
-                    with torch.no_grad():
-                        policies_logits, values_raw, _, _, uncertainties_raw = self.model(input_batch)
-                        policies = torch.softmax(policies_logits, dim=1).cpu().numpy()
-                        values = values_raw.cpu().numpy().flatten()
-                        uncertainties = uncertainties_raw.cpu().numpy().flatten()
-                    c_lib.mcts_feed_results(
-                        self.mcts_manager,
-                        policies.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                        values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                        uncertainties.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-                    )
-                policy_buffer = (ctypes.c_float * (BOARD_SIZE * BOARD_SIZE))()
-                for game_idx in list(self.active_games):
-                    if c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx) >= MCTS_SIMULATIONS:
-                        c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
-                        policy_np = np.ctypeslib.as_array(policy_buffer).copy()
-                        board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
-                        current_player = board_state_ptr.contents.current_player
-                        state_tensor = self.board_to_tensor(board_state_ptr.contents)
-                        self.game_histories[game_idx].append((state_tensor, policy_np, current_player))
-                        move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
-                                                                                game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
-                        if move_selection_temp > 0:
-                            move_probs = policy_np ** (1.0 / move_selection_temp)
-                            sum_probs = np.sum(move_probs)
-                            if sum_probs > 1e-8:
-                                move_probs /= sum_probs
-                            else:
-                                move_probs = policy_np
-                        else:
-                            move_probs = np.zeros_like(policy_np)
-                            if np.sum(policy_np) > 0: move_probs[np.argmax(policy_np)] = 1.0
-                        if np.sum(move_probs) < 1e-8:
-                            if game_idx in self.active_games: self.active_games.remove(game_idx)
-                            continue
-                        move = np.random.choice(range(BOARD_SIZE * BOARD_SIZE), p=move_probs)
-                        c_lib.mcts_make_move(self.mcts_manager, game_idx, int(move))
-                        self.move_counts[game_idx] += 1
-                        if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
-                            if game_idx in self.active_games: self.active_games.remove(game_idx)
-            except OSError as e:
-                if "0xe06d7363" in str(e):
-                    print("\nFATAL ERROR: A C++ exception occurred (often out of memory).")
-                else:
-                    print(f"\nAn unexpected OS error occurred: {e}")
-                return
-
-        print("所有并行游戏已完成。")
-        all_training_data = []
-        for game_idx in range(self.num_games):
-            final_board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
-            if not final_board_state_ptr: continue
-            raw_score_diff = c_lib.get_score_diff(final_board_state_ptr)
-            for state_tensor, policy, player_at_step in self.game_histories[game_idx]:
-                normalized_score = float(raw_score_diff) / (BOARD_SIZE * BOARD_SIZE)
-                final_value = normalized_score if player_at_step == 0 else -normalized_score
-                ownership_target = self.calculate_ownership_target(final_board_state_ptr.contents)
-                all_training_data.append((state_tensor, policy, final_value, ownership_target))
-
-        if all_training_data:
-            if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
-            filename = os.path.join(DATA_DIR, f"batch_{int(time.time())}.pkl")
-            with open(filename, 'wb') as f:
-                pickle.dump(all_training_data, f)
-            print(f"批处理完成, {len(all_training_data)} 条数据已保存至 {filename}")
-
-    def __del__(self):
-        if hasattr(self, 'mcts_manager') and self.mcts_manager:
-            c_lib.destroy_mcts_manager(self.mcts_manager)
 
 
 if __name__ == "__main__":
