@@ -10,7 +10,7 @@ import glob
 import pickle
 import time
 import argparse
-import gzip  # 导入gzip库
+import gzip  # 1. 导入gzip库
 
 from popucom_nn_model import PomPomNN
 
