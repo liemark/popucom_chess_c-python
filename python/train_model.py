@@ -68,7 +68,7 @@ def get_args():
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
     parser.add_argument('--epochs', type=int, default=1, help='训练的总轮数 (推荐值为1)')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
-    parser.add_argument('--lr', type=float, default=2e-4, help='学习率')
+    parser.add_argument('--lr', type=float, default=2e-5, help='学习率') # 学习率1e-5数量级
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
