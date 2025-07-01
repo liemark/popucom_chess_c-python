@@ -8,56 +8,65 @@
 #include <random>
 #include <algorithm>
 #include <iostream>
+#include <limits> // 用于 size_t 的最大值
 
-// --- MCTS 核心参数 ---
+// --- MCTS Core Parameters ---
 // 0.1 * 81 = 8.1，相当于认为领先8地块等效100%胜率
 const float C_PUCT = 0.1f;
 const float NOISE_RATIO = 0.25f;
-// “首次着法紧迫性”(First Play Urgency, FPU)
-// 为未访问节点设置一个小的正Q值（从父节点角度看），以鼓励探索。
-// 0.02 * 81 = 1.62，相当于认为优势大到大于1.62地块时才不去看它
-const double UNVISITED_NODE_Q_INIT = 0.02;
 constexpr size_t INITIAL_NODE_STORE_CAPACITY = 8192;
 
-// --- 节点结构 (索引指针版本) ---
+// 使用一个明确的常量作为无效索引，而不是-1
+const size_t INVALID_INDEX = std::numeric_limits<size_t>::max();
+
+// --- Node Structure (Index Pointers Version) ---
 struct Node {
-    int parent_idx = -1;
-    int children_start_idx = -1;
+    // 使用 size_t 来匹配 vector 的索引类型，修复类型转换警告
+    size_t parent_idx = INVALID_INDEX;
+    size_t children_start_idx = INVALID_INDEX;
+
     int num_children = 0;
     int move_leading_to_this_node = -1;
     bool is_expanded = false;
     int visit_count = 0;
     double total_action_value = 0.0;
     float prior_probability = 0.0;
-    Node(int parent, int move, float prior) : parent_idx(parent), move_leading_to_this_node(move), prior_probability(prior) {}
-    Node() = default;
-    double get_puct_value(int total_parent_visits) const {
-        // 当父节点选择子节点时，Q值是从父节点的角度看的。
-        // total_action_value 是从子节点的角度累计的，所以需要取负。
-        // 对于未访问过的节点(visit_count == 0)，我们给它一个小的正Q值，鼓励探索。
-        double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : UNVISITED_NODE_Q_INIT;
 
+    Node(size_t parent, int move, float prior) : parent_idx(parent), move_leading_to_this_node(move), prior_probability(prior) {}
+    Node() = default;
+
+    /** First Play Urgency（FPU)
+    * 为未访问节点设置一个小的正Q值（从父节点角度看），以鼓励探索。
+    * 为了方便训练，干脆先设置为足够大的值，例如1，效果约等于+∞，强制至少看一次所有点位
+    * 正常使用时可以设置为0.02
+    * 0.02 * 81 = 1.62，相当于认为优势不大于1.62地块时查看所有点位
+    * const double UNVISITED_NODE_Q_INIT = 0.02;
+    */
+    // 将 FPU 值作为参数传入
+    double get_puct_value(int total_parent_visits, double fpu_value) const {
+        double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : fpu_value;
         double u_value = C_PUCT * prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
         return q_value + u_value;
     }
 };
 
-// --- 节点存储和管理器 ---
+// --- Node Storage ---
 class NodeStore {
 private:
     std::vector<Node> nodes;
 public:
     NodeStore() { nodes.reserve(INITIAL_NODE_STORE_CAPACITY); }
     void clear() { nodes.clear(); nodes.reserve(INITIAL_NODE_STORE_CAPACITY); }
-    Node& operator[](int index) { return nodes[index]; }
-    const Node& operator[](int index) const { return nodes[index]; }
-    int add_node(int parent_idx, int move, float prior) {
+    Node& operator[](size_t index) { return nodes[index]; }
+    const Node& operator[](size_t index) const { return nodes[index]; }
+
+    size_t add_node(size_t parent_idx, int move, float prior) {
         nodes.emplace_back(parent_idx, move, prior);
-        return static_cast<int>(nodes.size() - 1);
+        return nodes.size() - 1;
     }
-    void add_children(int parent_idx, int count, const std::vector<int>& moves, const float* policy) {
+    void add_children(size_t parent_idx, int count, const std::vector<int>& moves, const float* policy) {
         Node& parent_node = nodes[parent_idx];
-        parent_node.children_start_idx = static_cast<int>(nodes.size());
+        parent_node.children_start_idx = nodes.size();
         parent_node.num_children = count;
         for (int i = 0; i < count; ++i) {
             int move = moves[i];
@@ -67,14 +76,15 @@ public:
     size_t size() const { return nodes.size(); }
 };
 
-// --- 单个游戏 MCTS 搜索器 ---
+
+// --- MCTS Searcher for a single game ---
 class MCTSSearch {
 private:
     std::mt19937 rng{ std::random_device{}() };
-    void apply_dirichlet_noise(int node_idx) {
+    void apply_dirichlet_noise(size_t node_idx) {
         Node& node = node_store[node_idx];
         if (node.num_children <= 1) return;
-        const double KATA_GO_ALPHA_SCALER = 10.83; // 0.03 * 19 * 19
+        const double KATA_GO_ALPHA_SCALER = 10.83;
         double alpha = KATA_GO_ALPHA_SCALER / static_cast<double>(node.num_children);
         std::gamma_distribution<double> gamma(alpha, 1.0);
         std::vector<double> noise;
@@ -91,35 +101,41 @@ private:
             }
         }
     }
+
 public:
     NodeStore node_store;
-    int root_idx = -1;
+    size_t root_idx = INVALID_INDEX;
     Board root_board;
     int game_index;
-    int pending_evaluation_leaf_idx = -1;
+    size_t pending_evaluation_leaf_idx = INVALID_INDEX;
     bool add_dirichlet_noise;
-    MCTSSearch(int index, bool enable_noise) : game_index(index), add_dirichlet_noise(enable_noise) {
+    double fpu_value;
+
+    MCTSSearch(int index, bool enable_noise, double initial_fpu)
+        : game_index(index), add_dirichlet_noise(enable_noise), fpu_value(initial_fpu) {
         init_board(&root_board);
         reset(&root_board);
     }
+
+    void set_fpu(double new_fpu) { fpu_value = new_fpu; }
     void set_noise_enabled(bool enabled) { add_dirichlet_noise = enabled; }
     void reset(const Board* new_board_state) {
         node_store.clear();
         copy_board(new_board_state, &root_board);
-        root_idx = node_store.add_node(-1, -1, 1.0f);
-        pending_evaluation_leaf_idx = -1;
+        root_idx = node_store.add_node(INVALID_INDEX, -1, 1.0f);
+        pending_evaluation_leaf_idx = INVALID_INDEX;
     }
     int get_simulations_done() const {
-        if (root_idx != -1 && (size_t)root_idx < node_store.size()) {
+        if (root_idx != INVALID_INDEX && root_idx < node_store.size()) {
             return node_store[root_idx].visit_count;
         }
         return 0;
     }
     void run_simulation() {
-        if (pending_evaluation_leaf_idx != -1) return;
+        if (pending_evaluation_leaf_idx != INVALID_INDEX) return;
         Board current_board;
         copy_board(&root_board, &current_board);
-        int leaf_idx = select_leaf(&current_board);
+        size_t leaf_idx = select_leaf(&current_board);
         if (get_game_result(&current_board) != IN_PROGRESS) {
             int raw_score_diff = get_score_diff(&current_board);
             float normalized_score = static_cast<float>(raw_score_diff) / static_cast<float>(BOARD_SQUARES);
@@ -130,21 +146,21 @@ public:
             pending_evaluation_leaf_idx = leaf_idx;
         }
     }
-    int select_leaf(Board* current_board) {
-        int current_idx = root_idx;
+    size_t select_leaf(Board* current_board) {
+        size_t current_idx = root_idx;
         while (node_store[current_idx].is_expanded) {
             if (node_store[current_idx].num_children == 0) return current_idx;
-            int best_child_offset = get_best_child_offset(current_idx);
-            if (best_child_offset == -1) return current_idx;
+            size_t best_child_offset = get_best_child_offset(current_idx);
+            if (best_child_offset == INVALID_INDEX) return current_idx;
             current_idx = node_store[current_idx].children_start_idx + best_child_offset;
             make_move(current_board, node_store[current_idx].move_leading_to_this_node);
         }
         return current_idx;
     }
     void expand_and_evaluate(const Board& board_at_leaf, const float* policy, float value) {
-        if (pending_evaluation_leaf_idx == -1) return;
-        int leaf_idx = pending_evaluation_leaf_idx;
-        pending_evaluation_leaf_idx = -1;
+        if (pending_evaluation_leaf_idx == INVALID_INDEX) return;
+        size_t leaf_idx = pending_evaluation_leaf_idx;
+        pending_evaluation_leaf_idx = INVALID_INDEX;
         Bitboards legal_moves_bb = get_legal_moves(&board_at_leaf);
         std::vector<int> legal_moves;
         for (int sq = 0; sq < BOARD_SQUARES; ++sq) {
@@ -161,10 +177,10 @@ public:
         }
         backpropagate(leaf_idx, value);
     }
-    void backpropagate(int leaf_idx, float value) {
-        int current_idx = leaf_idx;
+    void backpropagate(size_t leaf_idx, float value) {
+        size_t current_idx = leaf_idx;
         float current_value = value;
-        while (current_idx != -1) {
+        while (current_idx != INVALID_INDEX) {
             Node& current_node = node_store[current_idx];
             current_node.visit_count++;
             current_node.total_action_value += current_value;
@@ -172,13 +188,15 @@ public:
             current_idx = current_node.parent_idx;
         }
     }
-    int get_best_child_offset(int parent_idx) {
+
+    size_t get_best_child_offset(size_t parent_idx) {
         double max_puct = -1e9;
-        int best_child_offset = -1;
+        size_t best_child_offset = INVALID_INDEX;
         const Node& parent_node = node_store[parent_idx];
+
         for (int i = 0; i < parent_node.num_children; ++i) {
             const Node& child = node_store[parent_node.children_start_idx + i];
-            double puct_val = child.get_puct_value(parent_node.visit_count);
+            double puct_val = child.get_puct_value(parent_node.visit_count, this->fpu_value);
             if (puct_val > max_puct) {
                 max_puct = puct_val;
                 best_child_offset = i;
@@ -214,33 +232,40 @@ public:
     }
     void make_move_on_tree(int square) {
         const Node& old_root = node_store[root_idx];
-        int new_root_idx = -1;
+        size_t new_root_idx = INVALID_INDEX;
         for (int i = 0; i < old_root.num_children; ++i) {
-            int child_idx = old_root.children_start_idx + i;
+            size_t child_idx = old_root.children_start_idx + i;
             if (node_store[child_idx].move_leading_to_this_node == square) {
                 new_root_idx = child_idx;
                 break;
             }
         }
         make_move(&root_board, square);
-        if (new_root_idx != -1) {
+        if (new_root_idx != INVALID_INDEX) {
             root_idx = new_root_idx;
-            node_store[root_idx].parent_idx = -1;
+            node_store[root_idx].parent_idx = INVALID_INDEX;
         }
         else {
             reset(&root_board);
         }
-        pending_evaluation_leaf_idx = -1;
+        pending_evaluation_leaf_idx = INVALID_INDEX;
     }
 };
 
+// --- MCTS Manager ---
 class MCTSManager {
 public:
     std::vector<std::unique_ptr<MCTSSearch>> searches;
     std::mutex mtx;
-    MCTSManager(int num_games, bool enable_noise) {
+    MCTSManager(int num_games, bool enable_noise, double initial_fpu) {
         for (int i = 0; i < num_games; ++i) {
-            searches.push_back(std::make_unique<MCTSSearch>(i, enable_noise));
+            searches.push_back(std::make_unique<MCTSSearch>(i, enable_noise, initial_fpu));
+        }
+    }
+    void set_fpu_for_all(double new_fpu) {
+        std::lock_guard<std::mutex> lock(mtx);
+        for (auto& search : searches) {
+            search->set_fpu(new_fpu);
         }
     }
     void set_noise_enabled_for_all(bool enabled) {
@@ -252,11 +277,10 @@ public:
 };
 
 
-// C 接口部分 (保持不变)
+// C-style API
 extern "C" {
     const int NUM_INPUT_CHANNELS = 11;
     const int MAX_MOVES_PER_PLAYER = 25;
-
     API void boards_to_tensors_c(const Board* boards, int num_boards, float* output_tensor) {
         const int plane_size = BOARD_SQUARES;
         const int tensor_size = NUM_INPUT_CHANNELS * plane_size;
@@ -291,7 +315,17 @@ extern "C" {
             fill_plane(10, all_tiles);
         }
     }
-    API void* create_mcts_manager(int num_games, bool enable_noise) { return new MCTSManager(num_games, enable_noise); }
+
+    API void* create_mcts_manager(int num_games, bool enable_noise, double initial_fpu) {
+        return new MCTSManager(num_games, enable_noise, initial_fpu);
+    }
+
+    API void mcts_set_fpu(void* manager_ptr, double new_fpu) {
+        if (auto* manager = static_cast<MCTSManager*>(manager_ptr)) {
+            manager->set_fpu_for_all(new_fpu);
+        }
+    }
+
     API void destroy_mcts_manager(void* manager_ptr) { delete static_cast<MCTSManager*>(manager_ptr); }
     API void mcts_set_noise_enabled(void* manager_ptr, bool enable) {
         if (auto* manager = static_cast<MCTSManager*>(manager_ptr)) {
@@ -305,14 +339,14 @@ extern "C" {
         for (auto& search : manager->searches) {
             if (requests_count >= max_requests) break;
             if (get_game_result(&search->root_board) != IN_PROGRESS) continue;
-            if (search->pending_evaluation_leaf_idx == -1) {
+            if (search->pending_evaluation_leaf_idx == INVALID_INDEX) {
                 search->run_simulation();
-                if (search->pending_evaluation_leaf_idx != -1) {
+                if (search->pending_evaluation_leaf_idx != INVALID_INDEX) {
                     Board leaf_board;
                     copy_board(&search->root_board, &leaf_board);
                     std::vector<int> path;
-                    int curr = search->pending_evaluation_leaf_idx;
-                    while (curr != -1 && search->node_store[curr].parent_idx != -1) {
+                    size_t curr = search->pending_evaluation_leaf_idx;
+                    while (curr != INVALID_INDEX && search->node_store[curr].parent_idx != INVALID_INDEX) {
                         path.push_back(search->node_store[curr].move_leading_to_this_node);
                         curr = search->node_store[curr].parent_idx;
                     }
@@ -333,7 +367,7 @@ extern "C" {
         std::lock_guard<std::mutex> lock(manager->mtx);
         int result_idx = 0;
         for (auto& search : manager->searches) {
-            if (search->pending_evaluation_leaf_idx != -1) {
+            if (search->pending_evaluation_leaf_idx != INVALID_INDEX) {
                 search->expand_and_evaluate(boards[result_idx], &policies[result_idx * BOARD_SQUARES], values[result_idx]);
                 result_idx++;
             }
@@ -399,7 +433,7 @@ extern "C" {
             moves_buffer[count] = child.move_leading_to_this_node;
             q_values_buffer[count] = (child.visit_count > 0) ? static_cast<float>(-child.total_action_value / child.visit_count) : 0.0f;
             visit_counts_buffer[count] = child.visit_count;
-            puct_scores_buffer[count] = static_cast<float>(child.get_puct_value(parent_visits));
+            puct_scores_buffer[count] = static_cast<float>(child.get_puct_value(parent_visits, search->fpu_value));
             count++;
         }
         return count;
