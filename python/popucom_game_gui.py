@@ -9,11 +9,13 @@ import ctypes
 import platform
 
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
-from self_play_worker import MAX_MOVES_PER_PLAYER
+from self_play_worker import MAX_MOVES_PER_PLAYER  # 从self_play_worker导入常量
 
 
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
+
+
 class Board(ctypes.Structure):
     _fields_ = [
         ("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
@@ -21,7 +23,7 @@ class Board(ctypes.Structure):
     ]
 
 
-# C函数定义字典
+# 更新C函数定义字典以匹配最新的C++库
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
     "copy_board": (None, [ctypes.POINTER(Board), ctypes.POINTER(Board)]),
@@ -30,14 +32,14 @@ C_FUNCTIONS = {
     "get_score_diff": (ctypes.c_int, [ctypes.POINTER(Board)]),
     "make_move": (ctypes.c_bool, [ctypes.POINTER(Board), ctypes.c_int]),
     "pop_count": (ctypes.c_int, [ctypes.POINTER(Bitboards)]),
-    # create_mcts_manager 接收一个额外的布尔参数
     "create_mcts_manager": (ctypes.c_void_p, [ctypes.c_int, ctypes.c_bool]),
-    # mcts_set_noise_enabled 的定义
     "mcts_set_noise_enabled": (None, [ctypes.c_void_p, ctypes.c_bool]),
+    "boards_to_tensors_c": (None, [ctypes.POINTER(Board), ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
     "destroy_mcts_manager": (None, [ctypes.c_void_p]),
     "mcts_run_simulations_and_get_requests": (
         ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(Board), ctypes.POINTER(ctypes.c_int), ctypes.c_int]),
-    "mcts_feed_results": (None, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]),
+    "mcts_feed_results": (
+    None, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(Board)]),
     "mcts_get_policy": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
     "mcts_make_move": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
     "mcts_get_simulations_done": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
@@ -88,13 +90,8 @@ class PomPomGUI:
         self.board_c, self.game_history, self._last_move_coords = Board(), [], None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.ai_model = self._load_ai_model()
-
-        # 用于控制噪声开关的Tkinter变量
-        self.dirichlet_noise_enabled = BooleanVar(value=False)  # GUI中默认关闭
-
-        # 创建MCTS管理器时传入噪声的初始状态
+        self.dirichlet_noise_enabled = BooleanVar(value=False)
         self.mcts_manager_gui = c_lib.create_mcts_manager(1, self.dirichlet_noise_enabled.get())
-
         self.ai_thread = None
         self.analysis_data, self.analysis_in_progress = {}, False
         self.best_puct_move, self.best_visit_move = None, None
@@ -136,14 +133,10 @@ class PomPomGUI:
         self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200);
         self.temperature_slider.set(0.0);
         self.temperature_slider.grid(row=1, column=1, sticky='ew')
-
-        # 狄利克雷噪声复选框
-        self.noise_checkbox = Checkbutton(ai_frame, text="开启狄利克雷噪声 (对弈时一般不需要开启)",
+        self.noise_checkbox = Checkbutton(ai_frame, text="开启狄利克雷噪声 (用于训练/分析)",
                                           variable=self.dirichlet_noise_enabled, command=self._on_noise_toggle)
         self.noise_checkbox.grid(row=2, column=0, columnspan=2, sticky='w', pady=(5, 0))
-
         ai_frame.columnconfigure(1, weight=1)
-
         btn_frame = tk.Frame(control_frame)
         btn_frame.pack(side=tk.RIGHT, padx=5)
         self.new_game_button = tk.Button(btn_frame, text="新游戏", command=self._reset_and_start_new_game, width=10)
@@ -152,7 +145,6 @@ class PomPomGUI:
         self.undo_button.pack(pady=2)
         self.analyze_button = tk.Button(btn_frame, text="分析", command=self._toggle_analysis, width=10)
         self.analyze_button.pack(pady=2)
-
         status_frame = tk.Frame(self.master, pady=5);
         status_frame.pack(fill=tk.X, padx=10)
         self.status_label = tk.Label(status_frame, text="初始化...", font=("Arial", 14, "bold"));
@@ -165,7 +157,6 @@ class PomPomGUI:
         self.canvas.bind("<Button-1>", self._handle_click);
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-    # 切换噪声的回调函数
     def _on_noise_toggle(self):
         is_enabled = self.dirichlet_noise_enabled.get()
         if self.mcts_manager_gui:
@@ -179,12 +170,11 @@ class PomPomGUI:
 
     def _on_mode_change(self):
         mode, choice = self.game_mode.get(), self.human_player_choice.get()
-        self.role_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        self.role_frame.pack(side=tk.LEFT, fill=tk.Y,
+                             padx=5) if mode == "human_vs_ai" else self.role_frame.pack_forget()
         if mode == "human_vs_ai":
             self.human_player, self.ai_player = (BLACK_PLAYER, WHITE_PLAYER) if choice == "human_black" else (
             WHITE_PLAYER, BLACK_PLAYER)
-        else:
-            self.role_frame.pack_forget()
         self._continue_game_flow()
 
     def _reset_and_start_new_game(self):
@@ -226,7 +216,7 @@ class PomPomGUI:
         self.canvas.delete("all")
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
-                sq = r * BOARD_SIZE + c;
+                sq = r * BOARD_SIZE + c
                 x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (
                             r + 1) * self.cell_size
                 color = UNPAINTED_FLOOR_COLOR
@@ -238,14 +228,13 @@ class PomPomGUI:
 
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
-                sq = r * BOARD_SIZE + c;
+                sq = r * BOARD_SIZE + c
                 center_x, center_y, radius = c * self.cell_size + self.cell_size / 2, r * self.cell_size + self.cell_size / 2, self.cell_size / 2.2
                 p_color = None
                 if (self.board_c.pieces[BLACK_PLAYER].parts[sq // 64] >> (sq % 64)) & 1:
                     p_color = BLACK_PIECE_COLOR
                 elif (self.board_c.pieces[WHITE_PLAYER].parts[sq // 64] >> (sq % 64)) & 1:
                     p_color = WHITE_PIECE_COLOR
-
                 if p_color:
                     self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius,
                                             fill=p_color, outline="black", width=1.5)
@@ -261,16 +250,15 @@ class PomPomGUI:
                 score_text = f"领先: {score_lead:+.1f}"
                 puct_text = f"总分: {data['puct']:+.4f}"
                 visits_text = f"访问: {data['visits']}"
-                self.canvas.create_text(center_x, center_y - 20, text=score_text,
+                self.canvas.create_text(center_x, center_y - 15, text=score_text,
                                         fill="blue" if score_lead > 0 else "purple", font=fnt)
                 self.canvas.create_text(center_x, center_y, text=puct_text, fill="#006400", font=fnt)
-                self.canvas.create_text(center_x, center_y + 20, text=visits_text, fill="black", font=fnt)
+                self.canvas.create_text(center_x, center_y + 15, text=visits_text, fill="black", font=fnt)
 
         if self.best_puct_move:
             r, c = self.best_puct_move
             x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
             self.canvas.create_rectangle(x1 + 6, y1 + 6, x2 - 6, y2 - 6, outline="orange", width=3)
-
         if self.best_visit_move:
             r, c = self.best_visit_move
             x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
@@ -285,7 +273,6 @@ class PomPomGUI:
             turn_info = " (您)" if player == self.human_player else " (AI思考中...)"
         elif mode == "ai_vs_ai":
             turn_info = " (AI思考中...)"
-
         self.status_label.config(text=f"当前回合: {name}{turn_info}" if self.game_running else "游戏结束",
                                  fg=color if self.game_running else "black")
         score_diff = c_lib.get_score_diff(ctypes.byref(self.board_c))
@@ -340,7 +327,6 @@ class PomPomGUI:
         moves, q_vals, visits, pucts = (ctypes.c_int * 81)(), (ctypes.c_float * 81)(), (ctypes.c_int * 81)(), (
                     ctypes.c_float * 81)()
         num_moves = c_lib.mcts_get_analysis_data(self.mcts_manager_gui, 0, moves, q_vals, visits, pucts, 81)
-
         temp_data, best_p_move, best_puct, best_v_move, best_visits = {}, None, -float('inf'), None, -1
         for i in range(num_moves):
             r, c = moves[i] // BOARD_SIZE, moves[i] % BOARD_SIZE
@@ -377,7 +363,6 @@ class PomPomGUI:
                 move = np.random.choice(legal_idx) if legal_idx and self.game_running else -1
         else:
             move = np.argmax(policy_np)
-
         if self.game_running and move != -1: self.master.after(0, self._process_move, move)
 
     def _run_mcts_loop(self, num_sims, is_analysis=False):
@@ -385,41 +370,27 @@ class PomPomGUI:
             if not self.game_running and not is_analysis: return
             boards, indices = (Board * 1)(), (ctypes.c_int * 1)()
             if c_lib.mcts_run_simulations_and_get_requests(self.mcts_manager_gui, boards, indices, 1) > 0:
-                tensor = self._board_to_tensor(boards[0])
-                input_batch = torch.from_numpy(np.array([tensor])).to(self.device)
+                input_tensor_np = np.zeros((1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+                c_lib.boards_to_tensors_c(boards, 1, input_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+                input_batch = torch.from_numpy(input_tensor_np).to(self.device)
+
                 with torch.no_grad():
-                    p_logits, val, _, _ = self.ai_model(input_batch)
-                    policy = torch.softmax(p_logits, dim=1).cpu().numpy()
+                    # 使用 autocast 启用混合精度
+                    use_amp = self.device.type == 'cuda'
+                    with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                        p_logits, val, _, _ = self.ai_model(input_batch)
+
+                    # 将输出转回FP32
+                    policy = torch.softmax(p_logits.float(), dim=1).cpu().numpy()
+                    value = val.float().item()
+
                 c_lib.mcts_feed_results(self.mcts_manager_gui,
                                         np.ascontiguousarray(policy, dtype=np.float32).ctypes.data_as(
-                                            ctypes.POINTER(ctypes.c_float)), ctypes.byref(ctypes.c_float(val.item())))
-
-    def _board_to_tensor(self, board_c: Board) -> np.ndarray:
-        tensor = np.zeros((NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-        p, o = board_c.current_player, 1 - board_c.current_player
-
-        def get_plane(bb):
-            plane = np.zeros(81, dtype=np.float32)
-            for i in range(81):
-                if (bb.parts[i // 64] >> (i % 64)) & 1: plane[i] = 1.0
-            return plane.reshape((9, 9))
-
-        tensor[0, :, :], tensor[1, :, :] = get_plane(board_c.pieces[p]), get_plane(board_c.pieces[o])
-        tensor[2, :, :], tensor[3, :, :] = get_plane(board_c.tiles[p]), get_plane(board_c.tiles[o])
-        tensor[4, :, :], tensor[5, :, :] = (1., 0.) if p == 0 else (0., 1.)
-        tensor[6, :, :] = float(board_c.moves_left[0]) / MAX_MOVES_PER_PLAYER
-        tensor[7, :, :] = float(board_c.moves_left[1]) / MAX_MOVES_PER_PLAYER
-        tensor[8, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[0]))) / 81
-        tensor[9, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[1]))) / 81
-        all_tiles = Bitboards();
-        all_tiles.parts[0] = ~(board_c.tiles[0].parts[0] | board_c.tiles[1].parts[0]);
-        all_tiles.parts[1] = ~(board_c.tiles[0].parts[1] | board_c.tiles[1].parts[1])
-        tensor[10, :, :] = get_plane(all_tiles)
-        return tensor
+                                            ctypes.POINTER(ctypes.c_float)), ctypes.byref(ctypes.c_float(value)),
+                                        boards)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.resizable(False, False)
     app = PomPomGUI(root)
     root.mainloop()
