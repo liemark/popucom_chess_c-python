@@ -10,7 +10,7 @@
 #include <iostream>
 
 // --- MCTS 核心参数 ---
-const float C_PUCT = 1.25f;
+const float C_PUCT = 0.1f;
 const float DIRICHLET_ALPHA_BASE = 0.03f;
 const float NOISE_RATIO = 0.25f;
 
