@@ -11,7 +11,6 @@
 
 // --- MCTS 核心参数 ---
 const float C_PUCT = 0.1f; // 是因为胜负往往在-10~10以内，会被放缩到(-10~10)/81≈0.123，因此缩小一个量级
-const float DIRICHLET_ALPHA_BASE = 0.03f;
 const float NOISE_RATIO = 0.25f;
 constexpr size_t INITIAL_NODE_STORE_CAPACITY = 8192;
 
@@ -66,7 +65,11 @@ private:
     void apply_dirichlet_noise(int node_idx) {
         Node& node = node_store[node_idx];
         if (node.num_children <= 1) return;
-        double alpha = static_cast<double>(DIRICHLET_ALPHA_BASE * (19 * 19)) / static_cast<double>(node.num_children);
+
+        // 2. 根据您的要求，使用明确的KataGo/AlphaZero alpha缩放公式
+        const double KATA_GO_ALPHA_SCALER = 10.83; // 0.03 * 19 * 19
+        double alpha = KATA_GO_ALPHA_SCALER / static_cast<double>(node.num_children);
+
         std::gamma_distribution<double> gamma(alpha, 1.0);
         std::vector<double> noise;
         double noise_sum = 0.0;
@@ -78,6 +81,7 @@ private:
             for (int i = 0; i < node.num_children; ++i) {
                 Node& child = node_store[node.children_start_idx + i];
                 float noisy_prior = static_cast<float>(noise[i] / noise_sum);
+                // P(c) = 0.75 * P_raw(c) + 0.25 * noise
                 child.prior_probability = (1.0f - NOISE_RATIO) * child.prior_probability + NOISE_RATIO * noisy_prior;
             }
         }
@@ -88,7 +92,7 @@ public:
     Board root_board;
     int game_index;
     int pending_evaluation_leaf_idx = -1;
-    bool add_dirichlet_noise;
+    bool add_dirichlet_noise; // GUI开关会控制这个变量
     MCTSSearch(int index, bool enable_noise) : game_index(index), add_dirichlet_noise(enable_noise) {
         init_board(&root_board);
         reset(&root_board);
@@ -147,6 +151,7 @@ public:
             node_store.add_children(leaf_idx, legal_moves.size(), legal_moves, policy);
         }
         node_store[leaf_idx].is_expanded = true;
+        // 3. 噪声的应用由 add_dirichlet_noise 开关控制
         if (leaf_idx == root_idx && add_dirichlet_noise) {
             apply_dirichlet_noise(leaf_idx);
         }
@@ -181,6 +186,7 @@ public:
         std::fill(policy_buffer, policy_buffer + BOARD_SQUARES, 0.0f);
         const Node& root_node = node_store[root_idx];
         if (root_node.num_children == 0) return;
+        // 4. 根节点策略温度保持为1.03
         const float temperature = 1.03f;
         int max_visits = 0;
         for (int i = 0; i < root_node.num_children; ++i) {
@@ -245,60 +251,50 @@ public:
 
 // C 接口部分
 extern "C" {
-    // --- 新增的转换函数 ---
-    // NUM_INPUT_CHANNELS 和 MAX_MOVES_PER_PLAYER 需要与Python端同步
     const int NUM_INPUT_CHANNELS = 11;
     const int MAX_MOVES_PER_PLAYER = 25;
 
     API void boards_to_tensors_c(const Board* boards, int num_boards, float* output_tensor) {
         const int plane_size = BOARD_SQUARES;
         const int tensor_size = NUM_INPUT_CHANNELS * plane_size;
-
         for (int i = 0; i < num_boards; ++i) {
             const Board& board = boards[i];
             float* current_tensor_ptr = output_tensor + i * tensor_size;
-
             int p = board.current_player;
             int o = 1 - p;
-
-            // 辅助函数，用于填充一个平面
             auto fill_plane = [&](int plane_idx, const Bitboards& bb) {
                 float* plane_ptr = current_tensor_ptr + plane_idx * plane_size;
                 for (int sq = 0; sq < BOARD_SQUARES; ++sq) {
                     plane_ptr[sq] = GET_BIT(bb, sq) ? 1.0f : 0.0f;
                 }
                 };
-
-            // 辅助函数，用于填充标量平面
             auto fill_scalar_plane = [&](int plane_idx, float value) {
                 float* plane_ptr = current_tensor_ptr + plane_idx * plane_size;
                 std::fill(plane_ptr, plane_ptr + plane_size, value);
                 };
-
             fill_plane(0, board.pieces[p]);
             fill_plane(1, board.pieces[o]);
             fill_plane(2, board.tiles[p]);
             fill_plane(3, board.tiles[o]);
-
             fill_scalar_plane(4, (p == BLACK) ? 1.0f : 0.0f);
             fill_scalar_plane(5, (p == WHITE) ? 1.0f : 0.0f);
-
             fill_scalar_plane(6, static_cast<float>(board.moves_left[BLACK]) / MAX_MOVES_PER_PLAYER);
             fill_scalar_plane(7, static_cast<float>(board.moves_left[WHITE]) / MAX_MOVES_PER_PLAYER);
-
             fill_scalar_plane(8, static_cast<float>(pop_count(&board.tiles[BLACK])) / BOARD_SQUARES);
             fill_scalar_plane(9, static_cast<float>(pop_count(&board.tiles[WHITE])) / BOARD_SQUARES);
-
             Bitboards all_tiles;
             all_tiles.parts[0] = ~(board.tiles[BLACK].parts[0] | board.tiles[WHITE].parts[0]);
             all_tiles.parts[1] = ~(board.tiles[BLACK].parts[1] | board.tiles[WHITE].parts[1]);
             fill_plane(10, all_tiles);
         }
     }
-
-    // --- 其他现有C接口函数 ---
     API void* create_mcts_manager(int num_games, bool enable_noise) { return new MCTSManager(num_games, enable_noise); }
     API void destroy_mcts_manager(void* manager_ptr) { delete static_cast<MCTSManager*>(manager_ptr); }
+    API void mcts_set_noise_enabled(void* manager_ptr, bool enable) {
+        if (auto* manager = static_cast<MCTSManager*>(manager_ptr)) {
+            manager->set_noise_enabled_for_all(enable);
+        }
+    }
     API int mcts_run_simulations_and_get_requests(void* manager_ptr, Board* board_requests_buffer, int* request_indices_buffer, int max_requests) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         std::lock_guard<std::mutex> lock(manager->mtx);
@@ -340,7 +336,6 @@ extern "C" {
             }
         }
     }
-    // ... (其他函数 mcts_get_policy, mcts_make_move, mcts_get_simulations_done 等保持不变) ...
     API bool mcts_get_policy(void* manager_ptr, int game_index, float* policy_buffer) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         if (game_index < 0 || (size_t)game_index >= manager->searches.size()) return false;
