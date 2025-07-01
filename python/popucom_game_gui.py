@@ -7,23 +7,21 @@ import threading
 import time
 import ctypes
 import platform
+from torch.amp import autocast
 
 from popucom_nn_model import PomPomNN, BOARD_SIZE, NUM_INPUT_CHANNELS
-from self_play_worker import MAX_MOVES_PER_PLAYER  # 从self_play_worker导入常量
+from self_play_worker import MAX_MOVES_PER_PLAYER
 
 
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
 
 
-class Board(ctypes.Structure):
-    _fields_ = [
-        ("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
-        ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)
-    ]
+class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
+                                           ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)]
 
 
-# 更新C函数定义字典以匹配最新的C++库
+# 更新C函数定义字典
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
     "copy_board": (None, [ctypes.POINTER(Board), ctypes.POINTER(Board)]),
@@ -32,12 +30,13 @@ C_FUNCTIONS = {
     "get_score_diff": (ctypes.c_int, [ctypes.POINTER(Board)]),
     "make_move": (ctypes.c_bool, [ctypes.POINTER(Board), ctypes.c_int]),
     "pop_count": (ctypes.c_int, [ctypes.POINTER(Bitboards)]),
-    "create_mcts_manager": (ctypes.c_void_p, [ctypes.c_int, ctypes.c_bool]),
+    "create_mcts_manager": (ctypes.c_void_p, [ctypes.c_int, ctypes.c_bool, ctypes.c_double]),
     "mcts_set_noise_enabled": (None, [ctypes.c_void_p, ctypes.c_bool]),
+    "mcts_set_fpu": (None, [ctypes.c_void_p, ctypes.c_double]),
     "boards_to_tensors_c": (None, [ctypes.POINTER(Board), ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
     "destroy_mcts_manager": (None, [ctypes.c_void_p]),
     "mcts_run_simulations_and_get_requests": (
-        ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(Board), ctypes.POINTER(ctypes.c_int), ctypes.c_int]),
+    ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(Board), ctypes.POINTER(ctypes.c_int), ctypes.c_int]),
     "mcts_feed_results": (
     None, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.POINTER(Board)]),
     "mcts_get_policy": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
@@ -75,6 +74,7 @@ IN_PROGRESS, DRAW, BLACK_WIN, WHITE_WIN = -1, 0, 1, 2
 BOARD_BACKGROUND_COLOR, GRID_LINE_COLOR = "#D2B48C", "#8B4513"
 UNPAINTED_FLOOR_COLOR, BLACK_PAINTED_FLOOR_COLOR, WHITE_PAINTED_FLOOR_COLOR = "#FFF8DC", "#FFDAB9", "#90EE90"
 BLACK_PIECE_COLOR, WHITE_PIECE_COLOR = "red", "green"
+DEFAULT_FPU_GUI = 0.02  # GUI默认FPU值
 
 
 class PomPomGUI:
@@ -91,7 +91,10 @@ class PomPomGUI:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.ai_model = self._load_ai_model()
         self.dirichlet_noise_enabled = BooleanVar(value=False)
-        self.mcts_manager_gui = c_lib.create_mcts_manager(1, self.dirichlet_noise_enabled.get())
+
+        # 在创建时传入默认FPU值
+        self.mcts_manager_gui = c_lib.create_mcts_manager(1, self.dirichlet_noise_enabled.get(), DEFAULT_FPU_GUI)
+
         self.ai_thread = None
         self.analysis_data, self.analysis_in_progress = {}, False
         self.best_puct_move, self.best_visit_move = None, None
@@ -123,45 +126,64 @@ class PomPomGUI:
         for text, value in [("我执红 (先手)", "human_black"), ("我执绿 (后手)", "ai_black")]:
             tk.Radiobutton(self.role_frame, text=text, variable=self.human_player_choice, value=value,
                            command=self._on_mode_change).pack(anchor='w')
+
         ai_frame = tk.LabelFrame(control_frame, text="AI 设置", padx=5, pady=5)
         ai_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
         tk.Label(ai_frame, text="搜索模拟次数:").grid(row=0, column=0, sticky='w')
         self.ai_sims_slider = Scale(ai_frame, from_=50, to=5000, orient=tk.HORIZONTAL, resolution=50, length=200);
         self.ai_sims_slider.set(800);
         self.ai_sims_slider.grid(row=0, column=1, sticky='ew')
+
         tk.Label(ai_frame, text="落子温度:").grid(row=1, column=0, sticky='w')
         self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200);
         self.temperature_slider.set(0.0);
         self.temperature_slider.grid(row=1, column=1, sticky='ew')
-        self.noise_checkbox = Checkbutton(ai_frame, text="开启狄利克雷噪声 (用于训练/分析)",
+
+        # 滑块
+        tk.Label(ai_frame, text="节点初始分数/探索性:").grid(row=2, column=0, sticky='w')
+        self.fpu_slider = Scale(ai_frame, from_=0.0, to=1.0, orient=tk.HORIZONTAL, resolution=0.01, length=100,
+                                command=self._on_fpu_change);
+        self.fpu_slider.set(DEFAULT_FPU_GUI);
+        self.fpu_slider.grid(row=2, column=1, sticky='ew')
+
+        self.noise_checkbox = Checkbutton(ai_frame, text="开启狄利克雷噪声",
                                           variable=self.dirichlet_noise_enabled, command=self._on_noise_toggle)
-        self.noise_checkbox.grid(row=2, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.noise_checkbox.grid(row=3, column=0, columnspan=2, sticky='w', pady=(5, 0))
+
         ai_frame.columnconfigure(1, weight=1)
-        btn_frame = tk.Frame(control_frame)
+
+        btn_frame = tk.Frame(control_frame);
         btn_frame.pack(side=tk.RIGHT, padx=5)
-        self.new_game_button = tk.Button(btn_frame, text="新游戏", command=self._reset_and_start_new_game, width=10)
+        self.new_game_button = tk.Button(btn_frame, text="新游戏", command=self._reset_and_start_new_game, width=10);
         self.new_game_button.pack(pady=2)
-        self.undo_button = tk.Button(btn_frame, text="悔棋", command=self._undo_move, width=10)
+        self.undo_button = tk.Button(btn_frame, text="悔棋", command=self._undo_move, width=10);
         self.undo_button.pack(pady=2)
-        self.analyze_button = tk.Button(btn_frame, text="分析", command=self._toggle_analysis, width=10)
+        self.analyze_button = tk.Button(btn_frame, text="分析", command=self._toggle_analysis, width=10);
         self.analyze_button.pack(pady=2)
+
         status_frame = tk.Frame(self.master, pady=5);
         status_frame.pack(fill=tk.X, padx=10)
         self.status_label = tk.Label(status_frame, text="初始化...", font=("Arial", 14, "bold"));
         self.status_label.pack()
         self.moves_label = tk.Label(status_frame, text="", font=("Arial", 11));
         self.moves_label.pack()
+
         self.canvas = tk.Canvas(self.master, width=self.canvas_width, height=self.canvas_height,
                                 bg=BOARD_BACKGROUND_COLOR);
         self.canvas.pack(padx=10, pady=10)
         self.canvas.bind("<Button-1>", self._handle_click);
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
 
+    def _on_fpu_change(self, value):
+        """当FPU滑块被拖动时，实时更新C++后端的值。"""
+        if self.mcts_manager_gui:
+            c_lib.mcts_set_fpu(self.mcts_manager_gui, float(value))
+
+    # ... (其他所有 _on_... 和 _..._logic 函数保持不变) ...
     def _on_noise_toggle(self):
         is_enabled = self.dirichlet_noise_enabled.get()
-        if self.mcts_manager_gui:
-            c_lib.mcts_set_noise_enabled(self.mcts_manager_gui, is_enabled)
-            print(f"狄利克雷噪声已 {'启用' if is_enabled else '禁用'}.")
+        if self.mcts_manager_gui: c_lib.mcts_set_noise_enabled(self.mcts_manager_gui, is_enabled)
 
     def _on_closing(self):
         if self.ai_thread and self.ai_thread.is_alive(): self.game_running = False
@@ -172,16 +194,14 @@ class PomPomGUI:
         mode, choice = self.game_mode.get(), self.human_player_choice.get()
         self.role_frame.pack(side=tk.LEFT, fill=tk.Y,
                              padx=5) if mode == "human_vs_ai" else self.role_frame.pack_forget()
-        if mode == "human_vs_ai":
-            self.human_player, self.ai_player = (BLACK_PLAYER, WHITE_PLAYER) if choice == "human_black" else (
-            WHITE_PLAYER, BLACK_PLAYER)
+        if mode == "human_vs_ai": self.human_player, self.ai_player = (
+        BLACK_PLAYER, WHITE_PLAYER) if choice == "human_black" else (WHITE_PLAYER, BLACK_PLAYER)
         self._continue_game_flow()
 
     def _reset_and_start_new_game(self):
         if self.ai_thread and self.ai_thread.is_alive(): self.game_running = False; self.ai_thread.join(timeout=0.5)
         c_lib.init_board(ctypes.byref(self.board_c));
-        if self.mcts_manager_gui:
-            c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
+        if self.mcts_manager_gui: c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
         self.game_history.clear();
         self._last_move_coords, self.analysis_data, self.best_puct_move, self.best_visit_move = None, {}, None, None
         self.game_running = True;
@@ -225,7 +245,6 @@ class PomPomGUI:
                 elif (self.board_c.tiles[WHITE_PLAYER].parts[sq // 64] >> (sq % 64)) & 1:
                     color = WHITE_PAINTED_FLOOR_COLOR
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline=GRID_LINE_COLOR, width=1)
-
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 sq = r * BOARD_SIZE + c
@@ -241,26 +260,24 @@ class PomPomGUI:
                     if self._last_move_coords == (r, c): self.canvas.create_oval(center_x - 10, center_y - 10,
                                                                                  center_x + 10, center_y + 10,
                                                                                  fill="white", outline="black")
-
         if self.analysis_data:
             fnt = font.Font(family='Helvetica', size=max(8, int(self.cell_size / 16)), weight='bold')
             for (r, c), data in self.analysis_data.items():
                 center_x, center_y = c * self.cell_size + self.cell_size / 2, r * self.cell_size + self.cell_size / 2
                 score_lead = data['q'] * BOARD_SIZE * BOARD_SIZE
-                score_text = f"领先: {score_lead:+.1f}"
-                puct_text = f"总分: {data['puct']:+.4f}"
+                score_text = f"领先: {score_lead:+.1f}";
+                puct_text = f"总分: {data['puct']:+.4f}";
                 visits_text = f"访问: {data['visits']}"
                 self.canvas.create_text(center_x, center_y - 15, text=score_text,
                                         fill="blue" if score_lead > 0 else "purple", font=fnt)
                 self.canvas.create_text(center_x, center_y, text=puct_text, fill="#006400", font=fnt)
                 self.canvas.create_text(center_x, center_y + 15, text=visits_text, fill="black", font=fnt)
-
         if self.best_puct_move:
-            r, c = self.best_puct_move
+            r, c = self.best_puct_move;
             x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
             self.canvas.create_rectangle(x1 + 6, y1 + 6, x2 - 6, y2 - 6, outline="orange", width=3)
         if self.best_visit_move:
-            r, c = self.best_visit_move
+            r, c = self.best_visit_move;
             x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
             self.canvas.create_rectangle(x1 + 3, y1 + 3, x2 - 3, y2 - 3, outline="red", width=3)
 
@@ -373,17 +390,12 @@ class PomPomGUI:
                 input_tensor_np = np.zeros((1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
                 c_lib.boards_to_tensors_c(boards, 1, input_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
                 input_batch = torch.from_numpy(input_tensor_np).to(self.device)
-
                 with torch.no_grad():
-                    # 使用 autocast 启用混合精度
                     use_amp = self.device.type == 'cuda'
                     with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
                         p_logits, val, _, _ = self.ai_model(input_batch)
-
-                    # 将输出转回FP32
                     policy = torch.softmax(p_logits.float(), dim=1).cpu().numpy()
                     value = val.float().item()
-
                 c_lib.mcts_feed_results(self.mcts_manager_gui,
                                         np.ascontiguousarray(policy, dtype=np.float32).ctypes.data_as(
                                             ctypes.POINTER(ctypes.c_float)), ctypes.byref(ctypes.c_float(value)),
