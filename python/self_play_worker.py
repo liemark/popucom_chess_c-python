@@ -13,7 +13,7 @@ from popucom_nn_model import PomPomNN, BOARD_SIZE
 from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
 
 # --- 全局配置 ---
-MCTS_SIMULATIONS = 200
+MCTS_SIMULATIONS = 400  # 似乎还是400收敛快一点
 NUM_PARALLEL_GAMES = 128
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
