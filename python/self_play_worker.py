@@ -5,7 +5,7 @@ import os
 import platform
 import time
 import pickle
-import gzip  # 导入gzip库
+import gzip
 import numpy as np
 import torch
 
@@ -18,12 +18,12 @@ NUM_PARALLEL_GAMES = 128
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
 DATA_DIR = "self_play_data"
-TOTAL_GAME_CYCLES = 40
+TOTAL_GAME_CYCLES = 40  # 增加单次运行生成的游戏批次数
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
 TEMPERATURE_MOVE_SELECTION = 1.0
-TEMPERATURE_DECAY_MOVES = 10
+TEMPERATURE_DECAY_MOVES = 10  # 根据游戏总长度调整探索步数
 TEMPERATURE_END = 0.1
 
 
@@ -37,24 +37,22 @@ class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", 
 
 def setup_c_library():
     """
-    加载 C++ 动态库并设置所有函数的参数类型 (argtypes) 和返回类型 (restype)。
+    加载 C++ 动态库并设置所有函数的参数类型和返回类型。
     """
     lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
     if not os.path.exists(lib_name):
         raise FileNotFoundError(f"未找到C库 '{lib_name}'。请重新编译C代码。")
     c_lib = ctypes.CDLL(os.path.abspath(lib_name))
 
+    # --- 定义所有C函数接口 ---
     c_lib.create_mcts_manager.argtypes = [ctypes.c_int, ctypes.c_bool]
     c_lib.create_mcts_manager.restype = ctypes.c_void_p
 
-    c_lib.mcts_feed_results.argtypes = [
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(Board)
-    ]
-    c_lib.mcts_feed_results.restype = None
+    c_lib.boards_to_tensors_c.argtypes = [ctypes.POINTER(Board), ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
+    c_lib.boards_to_tensors_c.restype = None
 
+    c_lib.mcts_feed_results.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
+                                        ctypes.POINTER(Board)]
     c_lib.destroy_mcts_manager.argtypes = [ctypes.c_void_p]
     c_lib.mcts_run_simulations_and_get_requests.argtypes = [ctypes.c_void_p, ctypes.POINTER(Board),
                                                             ctypes.POINTER(ctypes.c_int), ctypes.c_int]
@@ -89,32 +87,6 @@ class GameBatchRunner:
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
 
-    def board_to_tensor(self, board_c: Board) -> np.ndarray:
-        tensor = np.zeros((NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-        p, o = board_c.current_player, 1 - board_c.current_player
-
-        def get_plane(bb):
-            plane = np.zeros(BOARD_SQUARES, dtype=np.float32)
-            for i in range(BOARD_SQUARES):
-                if (bb.parts[i // 64] >> (i % 64)) & 1: plane[i] = 1.0
-            return plane.reshape((BOARD_SIZE, BOARD_SIZE))
-
-        tensor[0, :, :] = get_plane(board_c.pieces[p])
-        tensor[1, :, :] = get_plane(board_c.pieces[o])
-        tensor[2, :, :] = get_plane(board_c.tiles[p])
-        tensor[3, :, :] = get_plane(board_c.tiles[o])
-        tensor[4, :, :] = 1. if p == 0 else 0.
-        tensor[5, :, :] = 1. if p == 1 else 0.
-        tensor[6, :, :] = float(board_c.moves_left[0]) / MAX_MOVES_PER_PLAYER
-        tensor[7, :, :] = float(board_c.moves_left[1]) / MAX_MOVES_PER_PLAYER
-        tensor[8, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[0]))) / BOARD_SQUARES
-        tensor[9, :, :] = float(c_lib.pop_count(ctypes.byref(board_c.tiles[1]))) / BOARD_SQUARES
-        all_tiles = Bitboards()
-        all_tiles.parts[0] = ~(board_c.tiles[0].parts[0] | board_c.tiles[1].parts[0])
-        all_tiles.parts[1] = ~(board_c.tiles[0].parts[1] | board_c.tiles[1].parts[1])
-        tensor[10, :, :] = get_plane(all_tiles)
-        return tensor
-
     def calculate_ownership_target(self, final_board_c: Board, player_at_step: int) -> np.ndarray:
         ownership = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
 
@@ -140,21 +112,21 @@ class GameBatchRunner:
                                                                        MAX_BATCH_SIZE)
 
             if num_requests > 0:
-                batch_tensors = [self.board_to_tensor(board_buffer[i]) for i in range(num_requests)]
-                input_batch = torch.from_numpy(np.array(batch_tensors)).to(self.device)
+                input_tensor_np = np.zeros((num_requests, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+                c_lib.boards_to_tensors_c(
+                    board_buffer,
+                    num_requests,
+                    input_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                )
+                input_batch = torch.from_numpy(input_tensor_np).to(self.device)
 
                 with torch.no_grad():
-                    policies_logits, values, _, _ = self.model(input_batch)
-                    initial_temp, final_temp, halflife_moves = 1.25, 1.1, 25
-                    decay_factor = np.log(final_temp / initial_temp) / halflife_moves
-                    for i in range(num_requests):
-                        game_idx = request_indices[i]
-                        current_move_count = self.move_counts[game_idx]
-                        temp = initial_temp * np.exp(decay_factor * current_move_count)
-                        policies_logits[i] /= max(final_temp, temp)
+                    use_amp = self.device.type == 'cuda'
+                    with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                        policies_logits, values, _, _ = self.model(input_batch)
 
-                    policies = torch.softmax(policies_logits, dim=1).cpu().numpy()
-                    values = values.cpu().numpy().flatten()
+                    policies = torch.softmax(policies_logits.float(), dim=1).cpu().numpy()
+                    values = values.float().cpu().numpy().flatten()
 
                 contiguous_policies = np.ascontiguousarray(policies, dtype=np.float32)
                 contiguous_values = np.ascontiguousarray(values, dtype=np.float32)
@@ -168,16 +140,18 @@ class GameBatchRunner:
 
             policy_buffer = (ctypes.c_float * BOARD_SQUARES)()
             for game_idx in list(self.active_games):
-                sims_done = c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx)
-
-                if sims_done >= MCTS_SIMULATIONS:
+                if c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx) >= MCTS_SIMULATIONS:
                     c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
                     policy_np = np.ctypeslib.as_array(policy_buffer).copy()
 
                     board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
-                    current_player = board_state_ptr.contents.current_player
-                    state_tensor = self.board_to_tensor(board_state_ptr.contents)
-                    self.game_histories[game_idx].append((state_tensor, policy_np, current_player))
+
+                    state_tensor_np = np.zeros((1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+                    c_lib.boards_to_tensors_c(board_state_ptr, 1,
+                                              state_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+
+                    self.game_histories[game_idx].append(
+                        (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player))
 
                     move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
                                                                             game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
@@ -213,8 +187,6 @@ class GameBatchRunner:
         if all_training_data:
             if not os.path.exists(DATA_DIR):
                 os.makedirs(DATA_DIR)
-
-            # 2. 修改文件名，并使用 gzip.open 进行保存
             filename = os.path.join(DATA_DIR, f"batch_{int(time.time())}.pkl.gz")
             with gzip.open(filename, 'wb') as f:
                 pickle.dump(all_training_data, f)
