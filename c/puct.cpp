@@ -10,8 +10,13 @@
 #include <iostream>
 
 // --- MCTS 核心参数 ---
-const float C_PUCT = 0.1f; // 是因为胜负往往在-10~10以内，会被放缩到(-10~10)/81≈0.123，因此缩小一个量级
+// 0.1 * 81 = 8.1，相当于认为领先8地块等效100%胜率
+const float C_PUCT = 0.1f;
 const float NOISE_RATIO = 0.25f;
+// “首次着法紧迫性”(First Play Urgency, FPU)
+// 为未访问节点设置一个小的正Q值（从父节点角度看），以鼓励探索。
+// 0.02 * 81 = 1.62，相当于认为优势大到大于1.62地块时才不去看它
+const double UNVISITED_NODE_Q_INIT = 0.02;
 constexpr size_t INITIAL_NODE_STORE_CAPACITY = 8192;
 
 // --- 节点结构 (索引指针版本) ---
@@ -27,7 +32,11 @@ struct Node {
     Node(int parent, int move, float prior) : parent_idx(parent), move_leading_to_this_node(move), prior_probability(prior) {}
     Node() = default;
     double get_puct_value(int total_parent_visits) const {
-        double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : 0.0;
+        // 当父节点选择子节点时，Q值是从父节点的角度看的。
+        // total_action_value 是从子节点的角度累计的，所以需要取负。
+        // 对于未访问过的节点(visit_count == 0)，我们给它一个小的正Q值，鼓励探索。
+        double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : UNVISITED_NODE_Q_INIT;
+
         double u_value = C_PUCT * prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
         return q_value + u_value;
     }
@@ -65,11 +74,8 @@ private:
     void apply_dirichlet_noise(int node_idx) {
         Node& node = node_store[node_idx];
         if (node.num_children <= 1) return;
-
-        // 2. 根据您的要求，使用明确的KataGo/AlphaZero alpha缩放公式
         const double KATA_GO_ALPHA_SCALER = 10.83; // 0.03 * 19 * 19
         double alpha = KATA_GO_ALPHA_SCALER / static_cast<double>(node.num_children);
-
         std::gamma_distribution<double> gamma(alpha, 1.0);
         std::vector<double> noise;
         double noise_sum = 0.0;
@@ -81,7 +87,6 @@ private:
             for (int i = 0; i < node.num_children; ++i) {
                 Node& child = node_store[node.children_start_idx + i];
                 float noisy_prior = static_cast<float>(noise[i] / noise_sum);
-                // P(c) = 0.75 * P_raw(c) + 0.25 * noise
                 child.prior_probability = (1.0f - NOISE_RATIO) * child.prior_probability + NOISE_RATIO * noisy_prior;
             }
         }
@@ -92,7 +97,7 @@ public:
     Board root_board;
     int game_index;
     int pending_evaluation_leaf_idx = -1;
-    bool add_dirichlet_noise; // GUI开关会控制这个变量
+    bool add_dirichlet_noise;
     MCTSSearch(int index, bool enable_noise) : game_index(index), add_dirichlet_noise(enable_noise) {
         init_board(&root_board);
         reset(&root_board);
@@ -151,7 +156,6 @@ public:
             node_store.add_children(leaf_idx, legal_moves.size(), legal_moves, policy);
         }
         node_store[leaf_idx].is_expanded = true;
-        // 3. 噪声的应用由 add_dirichlet_noise 开关控制
         if (leaf_idx == root_idx && add_dirichlet_noise) {
             apply_dirichlet_noise(leaf_idx);
         }
@@ -186,7 +190,6 @@ public:
         std::fill(policy_buffer, policy_buffer + BOARD_SQUARES, 0.0f);
         const Node& root_node = node_store[root_idx];
         if (root_node.num_children == 0) return;
-        // 4. 根节点策略温度保持为1.03
         const float temperature = 1.03f;
         int max_visits = 0;
         for (int i = 0; i < root_node.num_children; ++i) {
@@ -249,7 +252,7 @@ public:
 };
 
 
-// C 接口部分
+// C 接口部分 (保持不变)
 extern "C" {
     const int NUM_INPUT_CHANNELS = 11;
     const int MAX_MOVES_PER_PLAYER = 25;
