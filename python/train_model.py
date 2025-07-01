@@ -10,7 +10,7 @@ import glob
 import pickle
 import time
 import argparse
-import gzip  # 1. 导入gzip库
+import gzip
 
 from popucom_nn_model import PomPomNN
 
@@ -32,7 +32,6 @@ def augment_data(state, policy, ownership):
 
 class PopucomDataset(Dataset):
     """自定义数据集，加载自对弈数据并应用数据增强。"""
-
     def __init__(self, data, augment=True):
         self.data = data
         self.augment = augment
@@ -50,12 +49,10 @@ class PopucomDataset(Dataset):
 def load_data(data_dir, max_files=100):
     """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
-    # 2. 修改glob模式以查找 .pkl.gz 文件
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
     print(f"找到 {len(file_paths)} 个压缩数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
     for file_path in file_paths[:max_files]:
         try:
-            # 3. 使用 gzip.open 来读取文件
             with gzip.open(file_path, 'rb') as f:
                 data = pickle.load(f)
                 all_data.extend(data)
@@ -69,17 +66,14 @@ def get_args():
     parser = argparse.ArgumentParser(description="训练 PomPomNN 模型")
     parser.add_argument('--data-dir', type=str, default='self_play_data', help='自对弈数据所在的目录')
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
-    parser.add_argument('--epochs', type=int, default=1, help='训练的总轮数')
+    parser.add_argument('--epochs', type=int, default=1, help='训练的总轮数 (推荐值为1)')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
-    parser.add_argument('--lr', type=float, default=1e-5, help='学习率')
+    parser.add_argument('--lr', type=float, default=2e-4, help='学习率')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
-
-    # --- 损失权重 ---
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
     parser.add_argument('--ownership-weight', type=float, default=1.0, help='所有权损失的权重')
-    parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重 (KataGo 推荐)')
-
+    parser.add_argument('--soft-policy-weight', type=float, default=10.0, help='辅助软策略损失的权重')
     parser.add_argument('--no-augment', action='store_true', help='如果设置此项，则禁用数据增强')
     return parser.parse_args()
 
@@ -99,7 +93,7 @@ def train_model(args):
 
     use_augmentation = not args.no_augment
     dataset = PopucomDataset(training_data, augment=use_augmentation)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     print(f"成功加载 {len(training_data)} 条训练样本。数据增强已{'启用' if use_augmentation else '禁用'}。")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,6 +114,8 @@ def train_model(args):
     value_loss_fn = nn.MSELoss()
     ownership_loss_fn = nn.MSELoss()
 
+    scaler = torch.amp.GradScaler(device=device.type,enabled=(device.type == 'cuda'))
+
     start_time = time.time()
     for epoch in range(args.epochs):
         losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'ownership': 0.0, 'soft_policy': 0.0}
@@ -130,24 +126,29 @@ def train_model(args):
             target_values = target_values.to(device, dtype=torch.float32).unsqueeze(1)
             target_ownerships = target_ownerships.to(device, dtype=torch.float32)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
-            pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
+            with torch.amp.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
+                pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
 
-            soft_policy_temp = 4.0
-            target_policies_soft = target_policies + 1e-8
-            target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
-            target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
+                soft_policy_temp = 4.0
+                target_policies_soft = target_policies + 1e-8
+                target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
+                target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
 
-            loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
-            loss_value = value_loss_fn(pred_values, target_values)
-            loss_ownership = ownership_loss_fn(pred_ownerships, target_ownerships)
-            loss_soft_policy = policy_loss_fn(pred_soft_policy_logits, target_policies_soft)
+                loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
+                loss_value = value_loss_fn(pred_values, target_values)
+                loss_ownership = ownership_loss_fn(pred_ownerships, target_ownerships)
+                loss_soft_policy = policy_loss_fn(pred_soft_policy_logits, target_policies_soft)
 
-            loss = (args.policy_weight * loss_policy +
-                    args.value_weight * loss_value +
-                    args.ownership_weight * loss_ownership +
-                    args.soft_policy_weight * loss_soft_policy)
+                loss = (args.policy_weight * loss_policy +
+                        args.value_weight * loss_value +
+                        args.ownership_weight * loss_ownership +
+                        args.soft_policy_weight * loss_soft_policy)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             losses['total'] += loss.item()
             losses['policy'] += loss_policy.item()
@@ -155,16 +156,14 @@ def train_model(args):
             losses['ownership'] += loss_ownership.item()
             losses['soft_policy'] += loss_soft_policy.item()
 
-            loss.backward()
-            optimizer.step()
-
         num_batches = len(dataloader)
-        print(f"Epoch {epoch + 1}/{args.epochs} | "
-              f"总损失: {losses['total'] / num_batches:.4f} | "
-              f"策略: {losses['policy'] / num_batches:.4f} | "
-              f"价值: {losses['value'] / num_batches:.4f} | "
-              f"所有权: {losses['ownership'] / num_batches:.4f} | "
-              f"软策略: {losses['soft_policy'] / num_batches:.4f}")
+        if num_batches > 0:
+            print(f"Epoch {epoch + 1}/{args.epochs} | "
+                  f"总损失: {losses['total'] / num_batches:.4f} | "
+                  f"策略: {losses['policy'] / num_batches:.4f} | "
+                  f"价值: {losses['value'] / num_batches:.4f} | "
+                  f"所有权: {losses['ownership'] / num_batches:.4f} | "
+                  f"软策略: {losses['soft_policy'] / num_batches:.4f}")
 
     end_time = time.time()
     print(f"\n训练完成，用时: {end_time - start_time:.2f} 秒。")
