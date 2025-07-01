@@ -1,4 +1,4 @@
-本项目使用了katago的一些优化技术，如~~不确定度加权（引入了太多bug导致根本修不完），~~ 软温度头，动态狄利克雷噪声
+本项目使用了katago与alphazero等项目的一些优化技术
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
