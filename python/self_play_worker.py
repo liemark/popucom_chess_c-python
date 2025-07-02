@@ -24,7 +24,6 @@ TOTAL_GAME_CYCLES = 10
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
-# 将探索期延长到15步，以鼓励开局多样性
 TEMPERATURE_DECAY_MOVES = 15
 TEMPERATURE_MOVE_SELECTION = 1.0
 TEMPERATURE_END = 0.1
@@ -39,9 +38,7 @@ class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", 
 
 
 def setup_c_library():
-    """
-    加载 C++ 动态库并设置所有函数的参数类型和返回类型。
-    """
+    """加载 C++ 动态库并设置所有函数的参数类型和返回类型。"""
     lib_name = "popucom_core.dll" if platform.system() == "Windows" else "popucom_core.so"
     if not os.path.exists(lib_name):
         raise FileNotFoundError(f"未找到C库 '{lib_name}'。请重新编译C代码。")
@@ -73,12 +70,8 @@ def setup_c_library():
     c_lib.pop_count.argtypes = [ctypes.POINTER(Bitboards)]
     c_lib.pop_count.restype = ctypes.c_int
     c_lib.mcts_set_noise_enabled.argtypes = [ctypes.c_void_p, ctypes.c_bool]
-
-    # *** 新增：定义获取合法走法掩码的C++函数接口 ***
-    # 您需要在您的 C++ 库中实现这个函数。
-    # 它的作用是填充一个浮点数数组，在合法走法的位置为1.0，否则为0.0。
     c_lib.mcts_get_legal_moves_mask.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
-    c_lib.mcts_get_legal_moves_mask.restype = None  # 假设此函数没有返回值
+    c_lib.mcts_get_legal_moves_mask.restype = None
 
     return c_lib
 
@@ -97,8 +90,6 @@ class GameBatchRunner:
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
 
-    # *** 已移除: calculate_ownership_target 函数不再需要 ***
-
     def run(self):
         while self.active_games:
             board_buffer = (Board * MAX_BATCH_SIZE)()
@@ -113,7 +104,6 @@ class GameBatchRunner:
                 with torch.no_grad():
                     use_amp = self.device.type == 'cuda'
                     with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
-                        # *** 已更新：模型现在返回 legal_moves_logits，但我们在自对弈中忽略它 ***
                         policies_logits, values, _, _ = self.model(input_batch)
                     policies = torch.softmax(policies_logits.float(), dim=1).cpu().numpy()
                     values = values.float().cpu().numpy().flatten()
@@ -127,43 +117,61 @@ class GameBatchRunner:
             policy_buffer = (ctypes.c_float * BOARD_SQUARES)()
             for game_idx in list(self.active_games):
                 if c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx) >= MCTS_SIMULATIONS:
-                    # 1. 获取MCTS策略
                     c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
                     policy_np = np.ctypeslib.as_array(policy_buffer).copy()
 
-                    # 2. 获取棋盘状态张量
                     board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
                     state_tensor_np = np.zeros((1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
                     c_lib.boards_to_tensors_c(board_state_ptr, 1,
                                               state_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
-                    # *** 新增：获取当前局面的合法走法掩码 ***
                     legal_moves_mask_buffer = (ctypes.c_float * BOARD_SQUARES)()
                     c_lib.mcts_get_legal_moves_mask(self.mcts_manager, game_idx, legal_moves_mask_buffer)
                     legal_moves_mask_np = np.ctypeslib.as_array(legal_moves_mask_buffer).copy()
 
-                    # 3. *** 已更新：保存包含合法走法掩码的新数据元组 ***
                     self.game_histories[game_idx].append(
                         (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player, legal_moves_mask_np)
                     )
 
-                    # 4. 根据温度选择并执行下一步
-                    move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
-                                                                            game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
-                    if move_selection_temp > 0:
-                        # 使用MCTS策略（而不是模型策略）进行温度采样
-                        move_probs = policy_np ** (1.0 / move_selection_temp)
-                        sum_probs = np.sum(move_probs)
-                        move_probs /= sum_probs if sum_probs > 1e-8 else 1.0
+                    # --- 第一步随机，后续按温度采样 ---
+                    move = -1
+                    if self.move_counts[game_idx] == 0:
+                        # 第一步：从所有合法走法中完全随机选择一个，强制多样性
+                        legal_indices = np.where(legal_moves_mask_np > 0.5)[0]
+                        if len(legal_indices) > 0:
+                            move = np.random.choice(legal_indices)
+                        else:  # 游戏开始时不可能没有合法走法，作为安全检查
+                            if game_idx in self.active_games: self.active_games.remove(game_idx)
+                            continue
                     else:
-                        move_probs = np.zeros_like(policy_np)
-                        if np.sum(policy_np) > 0: move_probs[np.argmax(policy_np)] = 1.0
+                        # 后续步骤：使用基于温度的MCTS策略采样
+                        move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
+                                                                                game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
+                        if move_selection_temp > 0:
+                            move_probs = policy_np ** (1.0 / move_selection_temp)
+                            sum_probs = np.sum(move_probs)
+                            if sum_probs > 1e-8:
+                                move_probs /= sum_probs
+                            else:  # 如果概率和为0，则均匀随机选择一个合法走法
+                                legal_indices = np.where(legal_moves_mask_np > 0.5)[0]
+                                if len(legal_indices) > 0:
+                                    move_probs = np.zeros_like(policy_np)
+                                    for idx in legal_indices:
+                                        move_probs[idx] = 1.0 / len(legal_indices)
+                                else:  # 没有合法走法
+                                    if game_idx in self.active_games: self.active_games.remove(game_idx)
+                                    continue
+                        else:  # 温度为0，选择最优走法
+                            move_probs = np.zeros_like(policy_np)
+                            if np.sum(policy_np) > 0:
+                                move_probs[np.argmax(policy_np)] = 1.0
 
-                    if np.sum(move_probs) < 1e-8:
-                        if game_idx in self.active_games: self.active_games.remove(game_idx)
-                        continue
+                        if np.sum(move_probs) > 1e-8:
+                            move = np.random.choice(range(BOARD_SQUARES), p=move_probs)
+                        else:  # 安全检查
+                            if game_idx in self.active_games: self.active_games.remove(game_idx)
+                            continue
 
-                    move = np.random.choice(range(BOARD_SQUARES), p=move_probs)
                     c_lib.mcts_make_move(self.mcts_manager, game_idx, int(move))
                     self.move_counts[game_idx] += 1
 
@@ -174,12 +182,8 @@ class GameBatchRunner:
         all_training_data = []
         for game_idx in range(self.num_games):
             if not self.game_histories[game_idx]: continue
-
-            # *** 已更新：解包包含合法走法掩码的新数据元组 ***
             for state_tensor, policy, player_at_step, legal_moves_mask in self.game_histories[game_idx]:
                 final_value = c_lib.mcts_get_final_value(self.mcts_manager, game_idx, player_at_step)
-
-                # *** 已更新：保存包含合法走法掩码的最终训练数据 ***
                 all_training_data.append((state_tensor, policy, final_value, legal_moves_mask))
 
         if all_training_data:
