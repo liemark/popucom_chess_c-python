@@ -11,8 +11,13 @@
 #include <limits> // 用于 size_t 的最大值
 
 // --- MCTS Core Parameters ---
-// 0.1 * 81 = 8.1，相当于认为领先8地块等效100%胜率
-const float C_PUCT = 0.1f;
+/* c_puct = 0.1 * 81 = 8.1，相当于认为领先8地块等效100%胜率
+* 原先公式PUCT = q + c_puct * u
+* 为适应地块目标，且不改变噪声相对强度
+* 改为PUCT = c_puct_q * q + u
+* c_puct_q取10，相当于认为领先8地块等效100%胜率
+*/
+const float C_PUCT_Q = 10.0f;
 const float NOISE_RATIO = 0.25f;
 constexpr size_t INITIAL_NODE_STORE_CAPACITY = 8192;
 
@@ -45,8 +50,8 @@ struct Node {
     // 将 FPU 值作为参数传入
     double get_puct_value(int total_parent_visits, double fpu_value) const {
         double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : fpu_value;
-        double u_value = C_PUCT * prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
-        return q_value + u_value;
+        double u_value = prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
+        return C_PUCT_Q * q_value + u_value;
     }
 };
 
@@ -380,6 +385,36 @@ extern "C" {
         manager->searches[game_index]->get_policy(policy_buffer);
         return true;
     }
+
+    // *** 新增函数实现 ***
+    API void mcts_get_legal_moves_mask(void* manager_ptr, int game_index, float* mask_buffer) {
+        MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
+        if (game_index < 0 || (size_t)game_index >= manager->searches.size()) {
+            // 如果索引无效，填充为0并返回
+            std::fill(mask_buffer, mask_buffer + BOARD_SQUARES, 0.0f);
+            return;
+        }
+
+        // 加锁以保证线程安全
+        std::lock_guard<std::mutex> lock(manager->mtx);
+
+        // 获取指定游戏的当前棋盘状态
+        const Board* board = &manager->searches[game_index]->root_board;
+
+        // 生成合法走法的位棋盘
+        Bitboards legal_moves_bb = get_legal_moves(board);
+
+        // 遍历所有棋盘位置，填充掩码
+        for (int sq = 0; sq < BOARD_SQUARES; ++sq) {
+            if (GET_BIT(legal_moves_bb, sq)) {
+                mask_buffer[sq] = 1.0f;
+            }
+            else {
+                mask_buffer[sq] = 0.0f;
+            }
+        }
+    }
+
     API void mcts_make_move(void* manager_ptr, int game_index, int square) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         if (game_index < 0 || (size_t)game_index >= manager->searches.size()) return;
