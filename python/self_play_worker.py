@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch.amp import autocast
 
+# 确保导入的是更新后的模型
 from popucom_nn_model import PomPomNN, BOARD_SIZE
 from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
 
@@ -23,13 +24,16 @@ TOTAL_GAME_CYCLES = 10
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
+# 将探索期延长到15步，以鼓励开局多样性
+TEMPERATURE_DECAY_MOVES = 15
 TEMPERATURE_MOVE_SELECTION = 1.0
-TEMPERATURE_DECAY_MOVES = 10
 TEMPERATURE_END = 0.1
 
 
 # --- C 语言接口定义 ---
 class Bitboards(ctypes.Structure): _fields_ = [("parts", ctypes.c_uint64 * 2)]
+
+
 class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", Bitboards * 2),
                                            ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)]
 
@@ -70,6 +74,12 @@ def setup_c_library():
     c_lib.pop_count.restype = ctypes.c_int
     c_lib.mcts_set_noise_enabled.argtypes = [ctypes.c_void_p, ctypes.c_bool]
 
+    # *** 新增：定义获取合法走法掩码的C++函数接口 ***
+    # 您需要在您的 C++ 库中实现这个函数。
+    # 它的作用是填充一个浮点数数组，在合法走法的位置为1.0，否则为0.0。
+    c_lib.mcts_get_legal_moves_mask.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
+    c_lib.mcts_get_legal_moves_mask.restype = None  # 假设此函数没有返回值
+
     return c_lib
 
 
@@ -82,28 +92,12 @@ class GameBatchRunner:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device).eval()
 
-        # 为自对弈设置一个非常高的FPU值，以强制探索
-        # FPU = 1.0 基本等效为存在赢81个地块的方案才不去探索
-        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 1.0)
+        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 0.0)
         self.game_histories = [[] for _ in range(num_games)]
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
 
-    def calculate_ownership_target(self, final_board_c: Board, player_at_step: int) -> np.ndarray:
-        ownership = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-
-        def get_bit(bb, sq):
-            return (bb.parts[sq // 64] >> (sq % 64)) & 1 == 1
-
-        p_tiles = final_board_c.tiles[player_at_step]
-        o_tiles = final_board_c.tiles[1 - player_at_step]
-        for sq in range(BOARD_SQUARES):
-            r, c = sq // BOARD_SIZE, sq % BOARD_SIZE
-            if get_bit(p_tiles, sq):
-                ownership[r, c] = 1.0
-            elif get_bit(o_tiles, sq):
-                ownership[r, c] = -1.0
-        return ownership
+    # *** 已移除: calculate_ownership_target 函数不再需要 ***
 
     def run(self):
         while self.active_games:
@@ -119,51 +113,75 @@ class GameBatchRunner:
                 with torch.no_grad():
                     use_amp = self.device.type == 'cuda'
                     with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
+                        # *** 已更新：模型现在返回 legal_moves_logits，但我们在自对弈中忽略它 ***
                         policies_logits, values, _, _ = self.model(input_batch)
                     policies = torch.softmax(policies_logits.float(), dim=1).cpu().numpy()
                     values = values.float().cpu().numpy().flatten()
+
                 contiguous_policies = np.ascontiguousarray(policies, dtype=np.float32)
                 contiguous_values = np.ascontiguousarray(values, dtype=np.float32)
                 c_lib.mcts_feed_results(self.mcts_manager,
                                         contiguous_policies.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                                         contiguous_values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), board_buffer)
+
             policy_buffer = (ctypes.c_float * BOARD_SQUARES)()
             for game_idx in list(self.active_games):
                 if c_lib.mcts_get_simulations_done(self.mcts_manager, game_idx) >= MCTS_SIMULATIONS:
+                    # 1. 获取MCTS策略
                     c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
                     policy_np = np.ctypeslib.as_array(policy_buffer).copy()
+
+                    # 2. 获取棋盘状态张量
                     board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
                     state_tensor_np = np.zeros((1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
                     c_lib.boards_to_tensors_c(board_state_ptr, 1,
                                               state_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+
+                    # *** 新增：获取当前局面的合法走法掩码 ***
+                    legal_moves_mask_buffer = (ctypes.c_float * BOARD_SQUARES)()
+                    c_lib.mcts_get_legal_moves_mask(self.mcts_manager, game_idx, legal_moves_mask_buffer)
+                    legal_moves_mask_np = np.ctypeslib.as_array(legal_moves_mask_buffer).copy()
+
+                    # 3. *** 已更新：保存包含合法走法掩码的新数据元组 ***
                     self.game_histories[game_idx].append(
-                        (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player))
+                        (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player, legal_moves_mask_np)
+                    )
+
+                    # 4. 根据温度选择并执行下一步
                     move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
                                                                             game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
                     if move_selection_temp > 0:
+                        # 使用MCTS策略（而不是模型策略）进行温度采样
                         move_probs = policy_np ** (1.0 / move_selection_temp)
                         sum_probs = np.sum(move_probs)
                         move_probs /= sum_probs if sum_probs > 1e-8 else 1.0
                     else:
                         move_probs = np.zeros_like(policy_np)
                         if np.sum(policy_np) > 0: move_probs[np.argmax(policy_np)] = 1.0
+
                     if np.sum(move_probs) < 1e-8:
                         if game_idx in self.active_games: self.active_games.remove(game_idx)
                         continue
+
                     move = np.random.choice(range(BOARD_SQUARES), p=move_probs)
                     c_lib.mcts_make_move(self.mcts_manager, game_idx, int(move))
                     self.move_counts[game_idx] += 1
+
                     if c_lib.mcts_is_game_over(self.mcts_manager, game_idx):
                         if game_idx in self.active_games: self.active_games.remove(game_idx)
+
         print("所有并行游戏已完成。")
         all_training_data = []
         for game_idx in range(self.num_games):
-            final_board_state_ptr = c_lib.mcts_get_board_state(self.mcts_manager, game_idx)
-            if not final_board_state_ptr: continue
-            for state_tensor, policy, player_at_step in self.game_histories[game_idx]:
+            if not self.game_histories[game_idx]: continue
+
+            # *** 已更新：解包包含合法走法掩码的新数据元组 ***
+            for state_tensor, policy, player_at_step, legal_moves_mask in self.game_histories[game_idx]:
                 final_value = c_lib.mcts_get_final_value(self.mcts_manager, game_idx, player_at_step)
-                ownership_target = self.calculate_ownership_target(final_board_state_ptr.contents, player_at_step)
-                all_training_data.append((state_tensor, policy, final_value, ownership_target))
+
+                # *** 已更新：保存包含合法走法掩码的最终训练数据 ***
+                all_training_data.append((state_tensor, policy, final_value, legal_moves_mask))
+
         if all_training_data:
             if not os.path.exists(DATA_DIR):
                 os.makedirs(DATA_DIR)

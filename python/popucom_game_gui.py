@@ -74,7 +74,7 @@ IN_PROGRESS, DRAW, BLACK_WIN, WHITE_WIN = -1, 0, 1, 2
 BOARD_BACKGROUND_COLOR, GRID_LINE_COLOR = "#D2B48C", "#8B4513"
 UNPAINTED_FLOOR_COLOR, BLACK_PAINTED_FLOOR_COLOR, WHITE_PAINTED_FLOOR_COLOR = "#FFF8DC", "#FFDAB9", "#90EE90"
 BLACK_PIECE_COLOR, WHITE_PIECE_COLOR = "red", "green"
-DEFAULT_FPU_GUI = 0.02  # GUI默认FPU值
+DEFAULT_FPU_GUI = 0.0  # GUI默认FPU值
 
 
 class PomPomGUI:
@@ -142,7 +142,7 @@ class PomPomGUI:
 
         # 滑块
         tk.Label(ai_frame, text="节点初始分数/探索性:").grid(row=2, column=0, sticky='w')
-        self.fpu_slider = Scale(ai_frame, from_=0.0, to=1.0, orient=tk.HORIZONTAL, resolution=0.01, length=100,
+        self.fpu_slider = Scale(ai_frame, from_=-0.5, to=0.5, orient=tk.HORIZONTAL, resolution=0.01, length=100,
                                 command=self._on_fpu_change);
         self.fpu_slider.set(DEFAULT_FPU_GUI);
         self.fpu_slider.grid(row=2, column=1, sticky='ew')
