@@ -11,7 +11,6 @@ import pickle
 import time
 import argparse
 import gzip
-import bisect  # 用于快速查找文件索引
 
 from popucom_nn_model import PomPomNN
 
@@ -31,78 +30,35 @@ def augment_data(state, policy, ownership):
     return state.copy(), policy_2d.flatten().copy(), ownership.copy()
 
 
-class PopucomLazyDataset(Dataset):
-    """
-    自定义数据集，实现Lazyload以优化内存占用。
-    它只在需要时才从磁盘加载单个文件。
-    """
-
-    def __init__(self, file_paths, augment=True):
-        self.file_paths = file_paths
+class PopucomDataset(Dataset):
+    """自定义数据集，加载自对弈数据并应用数据增强。"""
+    def __init__(self, data, augment=True):
+        self.data = data
         self.augment = augment
 
-        # --- 建立索引 ---
-        # 需要预先知道每个文件里有多少样本，以便计算总长度
-        self.cumulative_lengths = [0]
-        print("正在建立数据集索引...")
-        for file_path in self.file_paths:
-            # 这里仍然需要打开每个文件一次来获取其长度，
-            # 但数据不会被一直保留在内存中。
-            try:
-                with gzip.open(file_path, 'rb') as f:
-                    data = pickle.load(f)
-                    length = len(data)
-                    self.cumulative_lengths.append(self.cumulative_lengths[-1] + length)
-            except Exception as e:
-                print(f"警告: 建立索引时无法读取文件 {file_path}: {e}")
-
-        self.total_length = self.cumulative_lengths[-1]
-
-        # --- 缓存机制 ---
-        # 为了避免在连续访问同一个文件时反复进行I/O操作，仅缓存最后一个打开的文件。
-        self.last_opened_file_path = None
-        self.last_opened_file_data = None
-
     def __len__(self):
-        return self.total_length
+        return len(self.data)
 
     def __getitem__(self, idx):
-        if idx < 0 or idx >= self.total_length:
-            raise IndexError("Index out of range")
-
-        # 1. 使用二分查找快速定位索引idx属于哪个文件
-        file_index = bisect.bisect_right(self.cumulative_lengths, idx) - 1
-
-        # 2. 计算在该文件内的局部索引
-        local_idx = idx - self.cumulative_lengths[file_index]
-        target_file_path = self.file_paths[file_index]
-
-        # 3. 检查缓存，如果需要的文件不是上一个文件，则加载新文件
-        if target_file_path != self.last_opened_file_path:
-            try:
-                with gzip.open(target_file_path, 'rb') as f:
-                    self.last_opened_file_data = pickle.load(f)
-                self.last_opened_file_path = target_file_path
-            except Exception as e:
-                print(f"错误: __getitem__ 无法加载文件 {target_file_path}: {e}")
-                # 返回一个虚拟数据或抛出异常
-                return torch.zeros(11, 9, 9), torch.zeros(81), 0.0, torch.zeros(9, 9)
-
-        # 4. 从缓存的数据中获取样本
-        state, policy, value, ownership = self.last_opened_file_data[local_idx]
-
-        # 5. 应用数据增强
+        state, policy, value, ownership = self.data[idx]
         if self.augment:
             state, policy, ownership = augment_data(state, policy, ownership)
-
         return state, policy, value, ownership
 
 
-def get_data_files(data_dir, max_files=25):
-    """只获取数据文件的路径列表，而不加载它们。"""
+def load_data(data_dir, max_files=25):
+    """从目录加载多个压缩的 .pkl.gz 数据文件"""
+    all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
-    print(f"找到 {len(file_paths)} 个压缩数据文件。将使用最新的 {min(len(file_paths), max_files)} 个。")
-    return file_paths[:max_files]
+    print(f"找到 {len(file_paths)} 个压缩数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
+    for file_path in file_paths[:max_files]:
+        try:
+            with gzip.open(file_path, 'rb') as f:
+                data = pickle.load(f)
+                all_data.extend(data)
+        except Exception as e:
+            print(f"警告: 无法加载或解析文件 {file_path}: {e}")
+    return all_data
 
 
 def get_args():
@@ -130,22 +86,15 @@ def train_model(args):
         print(f"  {k}: {v}")
     print("--------------------")
 
-    # 现在只获取文件路径列表
-    training_files = get_data_files(args.data_dir)
-    if not training_files:
+    training_data = load_data(args.data_dir)
+    if not training_data:
         print(f"错误: 在 '{args.data_dir}' 目录中未找到训练数据。请先运行自对弈。")
         return
 
     use_augmentation = not args.no_augment
-    # 使用新的懒加载数据集
-    dataset = PopucomLazyDataset(training_files, augment=use_augmentation)
-
-    if len(dataset) == 0:
-        print("错误: 数据集为空，无法开始训练。")
-        return
-
+    dataset = PopucomDataset(training_data, augment=use_augmentation)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    print(f"成功创建数据集，总样本数: {len(dataset)}。数据增强已{'启用' if use_augmentation else '禁用'}。")
+    print(f"成功加载 {len(training_data)} 条训练样本。数据增强已{'启用' if use_augmentation else '禁用'}。")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
@@ -165,7 +114,7 @@ def train_model(args):
     value_loss_fn = nn.MSELoss()
     ownership_loss_fn = nn.MSELoss()
 
-    scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
+    scaler = torch.amp.GradScaler(device=device.type,enabled=(device.type == 'cuda'))
 
     start_time = time.time()
     for epoch in range(args.epochs):
@@ -179,7 +128,7 @@ def train_model(args):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
+            with torch.amp.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
                 pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
 
                 soft_policy_temp = 4.0
