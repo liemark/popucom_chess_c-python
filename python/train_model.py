@@ -10,28 +10,39 @@ import glob
 import pickle
 import time
 import argparse
+import gzip
 
 from popucom_nn_model import PomPomNN
 
 
-def augment_data(state, policy, ownership):
-    """对棋盘状态、策略和所有权图进行随机的旋转和翻转。"""
+def augment_data(state, policy, legal_moves):
+    """
+    对棋盘状态、策略和合法走法掩码进行随机的旋转和翻转。
+    *** 新增：现在也对 legal_moves 进行增强 ***
+    """
     policy_2d = policy.reshape(9, 9)
+    # 将合法走法掩码也转换为2D形式
+    legal_moves_2d = legal_moves.reshape(9, 9)
+
     transform_type = np.random.randint(0, 8)
     k = transform_type % 4
     state = np.rot90(state, k, axes=(1, 2))
     policy_2d = np.rot90(policy_2d, k)
-    ownership = np.rot90(ownership, k)
+    legal_moves_2d = np.rot90(legal_moves_2d, k) # 应用相同的旋转
+
     if transform_type >= 4:
         state = np.flip(state, axis=2)
         policy_2d = np.flip(policy_2d, axis=1)
-        ownership = np.flip(ownership, axis=1)
-    return state.copy(), policy_2d.flatten().copy(), ownership.copy()
+        legal_moves_2d = np.flip(legal_moves_2d, axis=1) # 应用相同的翻转
+
+    return state.copy(), policy_2d.flatten().copy(), legal_moves_2d.flatten().copy()
 
 
 class PopucomDataset(Dataset):
-    """自定义数据集，加载自对弈数据并应用数据增强。"""
-
+    """
+    自定义数据集，加载自对弈数据并应用数据增强。
+    *** 已更新，现在加载合法走法掩码而不是所有权图 ***
+    """
     def __init__(self, data, augment=True):
         self.data = data
         self.augment = augment
@@ -40,20 +51,22 @@ class PopucomDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        state, policy, value, ownership = self.data[idx]
+        # 数据格式现在应为: (state, policy, value, legal_moves_mask)
+        # 您需要确保您的自对弈数据生成脚本保存的是这个格式。
+        state, policy, value, legal_moves = self.data[idx]
         if self.augment:
-            state, policy, ownership = augment_data(state, policy, ownership)
-        return state, policy, value, ownership
+            state, policy, legal_moves = augment_data(state, policy, legal_moves)
+        return state, policy, value, legal_moves
 
 
-def load_data(data_dir, max_files=50):
-    """从目录加载多个 .pkl 数据文件"""
+def load_data(data_dir, max_files=25):
+    """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
-    file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl")), key=os.path.getmtime, reverse=True)
-    print(f"找到 {len(file_paths)} 个数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
+    file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
+    print(f"找到 {len(file_paths)} 个压缩数据文件。将加载最新的 {min(len(file_paths), max_files)} 个。")
     for file_path in file_paths[:max_files]:
         try:
-            with open(file_path, 'rb') as f:
+            with gzip.open(file_path, 'rb') as f:
                 data = pickle.load(f)
                 all_data.extend(data)
         except Exception as e:
@@ -62,28 +75,31 @@ def load_data(data_dir, max_files=50):
 
 
 def get_args():
-    """解析命令行参数"""
+    """
+    解析命令行参数
+    *** 已更新：将 ownership-weight 替换为 legal-moves-weight ***
+    """
     parser = argparse.ArgumentParser(description="训练 PomPomNN 模型")
     parser.add_argument('--data-dir', type=str, default='self_play_data', help='自对弈数据所在的目录')
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
-    parser.add_argument('--epochs', type=int, default=6, help='训练的总轮数')
+    parser.add_argument('--epochs', type=int, default=1, help='训练的总轮数 (推荐值为1)')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
     parser.add_argument('--lr', type=float, default=1e-5, help='学习率')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
-
-    # --- 损失权重 ---
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
-    parser.add_argument('--ownership-weight', type=float, default=1.0, help='所有权损失的权重')
-    # 辅助软策略目标的权重
-    parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重 (KataGo 推荐)')
-
+    # 替换了 ownership-weight
+    parser.add_argument('--legal-moves-weight', type=float, default=0.25, help='合法走法预测损失的权重')
+    parser.add_argument('--soft-policy-weight', type=float, default=8.0, help='辅助软策略损失的权重')
     parser.add_argument('--no-augment', action='store_true', help='如果设置此项，则禁用数据增强')
     return parser.parse_args()
 
 
 def train_model(args):
-    """主训练函数"""
+    """
+    主训练函数
+    *** 已更新，使用新的合法走法预测任务 ***
+    """
     print("--- 开始模型训练 ---")
     print("当前配置:")
     for k, v in vars(args).items():
@@ -97,7 +113,7 @@ def train_model(args):
 
     use_augmentation = not args.no_augment
     dataset = PopucomDataset(training_data, augment=use_augmentation)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
     print(f"成功加载 {len(training_data)} 条训练样本。数据增强已{'启用' if use_augmentation else '禁用'}。")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -116,59 +132,65 @@ def train_model(args):
 
     policy_loss_fn = nn.CrossEntropyLoss()
     value_loss_fn = nn.MSELoss()
-    ownership_loss_fn = nn.MSELoss()
+    # 为合法走法预测任务选择更合适的损失函数
+    legal_moves_loss_fn = nn.BCEWithLogitsLoss()
+
+    scaler = torch.amp.GradScaler(device=device.type,enabled=(device.type == 'cuda'))
 
     start_time = time.time()
     for epoch in range(args.epochs):
-        # 初始化所有损失的累加器
-        losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'ownership': 0.0, 'soft_policy': 0.0}
+        losses = {'total': 0.0, 'policy': 0.0, 'value': 0.0, 'legal_moves': 0.0, 'soft_policy': 0.0}
 
-        for states, target_policies, target_values, target_ownerships in dataloader:
+        for states, target_policies, target_values, target_legal_moves in dataloader:
             states = states.to(device)
             target_policies = target_policies.to(device)
             target_values = target_values.to(device, dtype=torch.float32).unsqueeze(1)
-            target_ownerships = target_ownerships.to(device, dtype=torch.float32)
+            # 合法走法掩码的目标张量
+            target_legal_moves = target_legal_moves.to(device, dtype=torch.float32)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
-            # 模型现在返回四个值
-            pred_policy_logits, pred_values, pred_ownerships, pred_soft_policy_logits = model(states)
+            with torch.amp.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
+                # 假设模型现在返回: pred_policy_logits, pred_values, pred_legal_logits, pred_soft_policy_logits
+                # 您需要修改 popucom_nn_model.py 来实现这一点。
+                pred_policy_logits, pred_values, pred_legal_logits, pred_soft_policy_logits = model(states)
 
-            # --- 计算软策略目标 ---
-            soft_policy_temp = 4.0  # KataGo 使用的软化温度
-            target_policies_soft = target_policies + 1e-8  # 避免 log(0)
-            target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
-            target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
+                soft_policy_temp = 4.0
+                target_policies_soft = target_policies + 1e-8
+                target_policies_soft = torch.pow(target_policies_soft, 1.0 / soft_policy_temp)
+                target_policies_soft /= torch.sum(target_policies_soft, dim=1, keepdim=True)
 
-            # --- 计算所有损失 ---
-            loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
-            loss_value = value_loss_fn(pred_values, target_values)
-            loss_ownership = ownership_loss_fn(pred_ownerships, target_ownerships)
-            loss_soft_policy = policy_loss_fn(pred_soft_policy_logits, target_policies_soft)
+                loss_policy = policy_loss_fn(pred_policy_logits, target_policies)
+                loss_value = value_loss_fn(pred_values, target_values)
+                # 计算新的合法走法预测损失
+                loss_legal_moves = legal_moves_loss_fn(pred_legal_logits, target_legal_moves)
+                loss_soft_policy = policy_loss_fn(pred_soft_policy_logits, target_policies_soft)
 
-            loss = (args.policy_weight * loss_policy +
-                    args.value_weight * loss_value +
-                    args.ownership_weight * loss_ownership +
-                    args.soft_policy_weight * loss_soft_policy)
+                # 在总损失中包含新的损失项
+                loss = (args.policy_weight * loss_policy +
+                        args.value_weight * loss_value +
+                        args.legal_moves_weight * loss_legal_moves +
+                        args.soft_policy_weight * loss_soft_policy)
 
-            # 累加损失
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             losses['total'] += loss.item()
             losses['policy'] += loss_policy.item()
             losses['value'] += loss_value.item()
-            losses['ownership'] += loss_ownership.item()
+            losses['legal_moves'] += loss_legal_moves.item()
             losses['soft_policy'] += loss_soft_policy.item()
 
-            loss.backward()
-            optimizer.step()
-
-        # 打印每个 epoch 的平均损失
         num_batches = len(dataloader)
-        print(f"Epoch {epoch + 1}/{args.epochs} | "
-              f"总损失: {losses['total'] / num_batches:.4f} | "
-              f"策略: {losses['policy'] / num_batches:.4f} | "
-              f"价值: {losses['value'] / num_batches:.4f} | "
-              f"所有权: {losses['ownership'] / num_batches:.4f} | "
-              f"软策略: {losses['soft_policy'] / num_batches:.4f}")
+        if num_batches > 0:
+            # 更新日志输出
+            print(f"Epoch {epoch + 1}/{args.epochs} | "
+                  f"总损失: {losses['total'] / num_batches:.4f} | "
+                  f"策略: {losses['policy'] / num_batches:.4f} | "
+                  f"价值: {losses['value'] / num_batches:.4f} | "
+                  f"合法走法: {losses['legal_moves'] / num_batches:.4f} | "
+                  f"软策略: {losses['soft_policy'] / num_batches:.4f}")
 
     end_time = time.time()
     print(f"\n训练完成，用时: {end_time - start_time:.2f} 秒。")
