@@ -1,5 +1,3 @@
-# self_play_worker.py
-
 import ctypes
 import os
 import platform
@@ -8,23 +6,22 @@ import pickle
 import gzip
 import numpy as np
 import torch
-from torch.amp import autocast
 
-# 确保导入的是更新后的模型
-from popucom_nn_model import PomPomNN, BOARD_SIZE
-from popucom_nn_interface import NUM_INPUT_CHANNELS, MAX_MOVES_PER_PLAYER
+# MODIFIED: Import the updated model
+from popucom_nn_model import PomPomNN
+from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE, MAX_MOVES_PER_PLAYER
 
 # --- 全局配置 ---
-MCTS_SIMULATIONS = 400
+MCTS_SIMULATIONS = 200
 NUM_PARALLEL_GAMES = 512
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
 DATA_DIR = "self_play_data"
-TOTAL_GAME_CYCLES = 10
+TOTAL_GAME_CYCLES = 7
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 温度参数 ---
-TEMPERATURE_DECAY_MOVES = 15
+TEMPERATURE_DECAY_MOVES = 10
 TEMPERATURE_MOVE_SELECTION = 1.0
 TEMPERATURE_END = 0.1
 
@@ -85,7 +82,7 @@ class GameBatchRunner:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device).eval()
 
-        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 0.0)
+        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 0.02)  # Use a small FPU value
         self.game_histories = [[] for _ in range(num_games)]
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
@@ -104,7 +101,8 @@ class GameBatchRunner:
                 with torch.no_grad():
                     use_amp = self.device.type == 'cuda'
                     with torch.amp.autocast(device_type=self.device.type, enabled=use_amp):
-                        policies_logits, values, _, _ = self.model(input_batch)
+                        # MODIFIED: Unpack 3 results from the simplified model
+                        policies_logits, values, _ = self.model(input_batch)
                     policies = torch.softmax(policies_logits.float(), dim=1).cpu().numpy()
                     values = values.float().cpu().numpy().flatten()
 
@@ -125,50 +123,57 @@ class GameBatchRunner:
                     c_lib.boards_to_tensors_c(board_state_ptr, 1,
                                               state_tensor_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
+                    # MODIFIED: The history now only stores state, policy, and player.
+                    # The legal moves mask is fetched for move selection but not stored for training.
+                    self.game_histories[game_idx].append(
+                        (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player)
+                    )
+
+                    # --- Move Selection Logic ---
+                    # Get legal moves mask for immediate use in move selection
                     legal_moves_mask_buffer = (ctypes.c_float * BOARD_SQUARES)()
                     c_lib.mcts_get_legal_moves_mask(self.mcts_manager, game_idx, legal_moves_mask_buffer)
                     legal_moves_mask_np = np.ctypeslib.as_array(legal_moves_mask_buffer).copy()
 
-                    self.game_histories[game_idx].append(
-                        (state_tensor_np[0], policy_np, board_state_ptr.contents.current_player, legal_moves_mask_np)
-                    )
-
-                    # --- 第一步随机，后续按温度采样 ---
                     move = -1
                     if self.move_counts[game_idx] == 0:
-                        # 第一步：从所有合法走法中完全随机选择一个，强制多样性
                         legal_indices = np.where(legal_moves_mask_np > 0.5)[0]
                         if len(legal_indices) > 0:
                             move = np.random.choice(legal_indices)
-                        else:  # 游戏开始时不可能没有合法走法，作为安全检查
+                        else:
                             if game_idx in self.active_games: self.active_games.remove(game_idx)
                             continue
                     else:
-                        # 后续步骤：使用基于温度的MCTS策略采样
                         move_selection_temp = TEMPERATURE_MOVE_SELECTION if self.move_counts[
                                                                                 game_idx] < TEMPERATURE_DECAY_MOVES else TEMPERATURE_END
+
+                        # Apply policy mask to ensure only legal moves are selected
+                        masked_policy = policy_np * legal_moves_mask_np
+
                         if move_selection_temp > 0:
-                            move_probs = policy_np ** (1.0 / move_selection_temp)
+                            # Use masked policy for temperature-based sampling
+                            sum_masked_policy = np.sum(masked_policy)
+                            if sum_masked_policy > 1e-8:
+                                move_probs = masked_policy / sum_masked_policy
+                            else:  # Fallback if all legal moves have zero probability
+                                move_probs = legal_moves_mask_np / np.sum(legal_moves_mask_np)
+
+                            # Re-normalize after applying temperature
+                            move_probs = move_probs ** (1.0 / move_selection_temp)
                             sum_probs = np.sum(move_probs)
                             if sum_probs > 1e-8:
                                 move_probs /= sum_probs
-                            else:  # 如果概率和为0，则均匀随机选择一个合法走法
-                                legal_indices = np.where(legal_moves_mask_np > 0.5)[0]
-                                if len(legal_indices) > 0:
-                                    move_probs = np.zeros_like(policy_np)
-                                    for idx in legal_indices:
-                                        move_probs[idx] = 1.0 / len(legal_indices)
-                                else:  # 没有合法走法
-                                    if game_idx in self.active_games: self.active_games.remove(game_idx)
-                                    continue
-                        else:  # 温度为0，选择最优走法
-                            move_probs = np.zeros_like(policy_np)
-                            if np.sum(policy_np) > 0:
-                                move_probs[np.argmax(policy_np)] = 1.0
+                            else:  # Final fallback
+                                move_probs = legal_moves_mask_np / np.sum(legal_moves_mask_np)
+                        else:
+                            # Temperature is 0, choose the best move from the masked policy
+                            move_probs = np.zeros_like(masked_policy)
+                            best_move = np.argmax(masked_policy)
+                            move_probs[best_move] = 1.0
 
                         if np.sum(move_probs) > 1e-8:
                             move = np.random.choice(range(BOARD_SQUARES), p=move_probs)
-                        else:  # 安全检查
+                        else:
                             if game_idx in self.active_games: self.active_games.remove(game_idx)
                             continue
 
@@ -182,9 +187,12 @@ class GameBatchRunner:
         all_training_data = []
         for game_idx in range(self.num_games):
             if not self.game_histories[game_idx]: continue
-            for state_tensor, policy, player_at_step, legal_moves_mask in self.game_histories[game_idx]:
+
+            # MODIFIED: Process the simplified history format
+            for state_tensor, policy, player_at_step in self.game_histories[game_idx]:
                 final_value = c_lib.mcts_get_final_value(self.mcts_manager, game_idx, player_at_step)
-                all_training_data.append((state_tensor, policy, final_value, legal_moves_mask))
+                # MODIFIED: Save the simplified data tuple for training
+                all_training_data.append((state_tensor, policy, final_value))
 
         if all_training_data:
             if not os.path.exists(DATA_DIR):
