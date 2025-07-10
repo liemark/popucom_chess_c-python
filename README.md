@@ -1,4 +1,4 @@
-本项目使用了katago与alphazero等项目的一些优化技术~~，以及相对位置偏置的注意力模块~~
+本项目使用了katago与alphazero等项目的一些优化技术 ~~，以及相对位置偏置的注意力模块~~
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
