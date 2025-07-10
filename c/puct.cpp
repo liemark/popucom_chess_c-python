@@ -11,13 +11,8 @@
 #include <limits> // 用于 size_t 的最大值
 
 // --- MCTS Core Parameters ---
-/* c_puct = 0.1 * 81 = 8.1，相当于认为领先8地块等效100%胜率
-* 原先公式PUCT = q + c_puct * u
-* 为适应地块目标，且不改变噪声相对强度
-* 改为PUCT = c_puct_q * q + u
-* c_puct_q取10，相当于认为领先8地块等效100%胜率
-*/
-const float C_PUCT_Q = 10.0f;
+// MODIFIED: Reverted to the standard PUCT constant.
+const float C_PUCT = 1.0f;
 const float NOISE_RATIO = 0.25f;
 constexpr size_t INITIAL_NODE_STORE_CAPACITY = 8192;
 
@@ -44,14 +39,17 @@ struct Node {
     * 为未访问节点设置一个小的正Q值（从父节点角度看），以鼓励探索。
     * 为了方便训练，干脆先设置为足够大的值，例如1，效果约等于+∞，强制至少看一次所有点位
     * 正常使用时可以设置为0.02
-    * 0.02 * 81 = 1.62，相当于认为优势不大于1.62地块时查看所有点位
-    * const double UNVISITED_NODE_Q_INIT = 0.02;
     */
-    // 将 FPU 值作为参数传入
+    // MODIFIED: Reverted to the standard PUCT formula: Q + c_puct * U
     double get_puct_value(int total_parent_visits, double fpu_value) const {
+        // Q value: Average action value for this node. From the parent's perspective, so it's -total_action_value.
+        // If unvisited, use the FPU value.
         double q_value = (visit_count > 0) ? (-total_action_value / visit_count) : fpu_value;
-        double u_value = prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
-        return C_PUCT_Q * q_value + u_value;
+
+        // U value: Exploration term based on prior probability and parent's visit count.
+        double u_value = C_PUCT * prior_probability * (std::sqrt(static_cast<double>(total_parent_visits)) / (1.0 + visit_count));
+
+        return q_value + u_value;
     }
 };
 
@@ -141,10 +139,19 @@ public:
         Board current_board;
         copy_board(&root_board, &current_board);
         size_t leaf_idx = select_leaf(&current_board);
+
+        // MODIFIED: Use win/loss/draw for terminal node value
         if (get_game_result(&current_board) != IN_PROGRESS) {
-            int raw_score_diff = get_score_diff(&current_board);
-            float normalized_score = static_cast<float>(raw_score_diff) / static_cast<float>(BOARD_SQUARES);
-            float value_for_leaf_player = (current_board.current_player == BLACK) ? normalized_score : -normalized_score;
+            GameResult result = get_game_result(&current_board);
+            float value = 0.0f;
+            if (result == BLACK_WIN) value = 1.0f;
+            else if (result == WHITE_WIN) value = -1.0f;
+            // Draw is 0.0f
+
+            // The value is from the perspective of the player whose turn it would be at the leaf.
+            // If Black won, the final value is 1.0. If it's Black's turn at the leaf, they see +1.0.
+            // If it's White's turn, they see -1.0.
+            float value_for_leaf_player = (current_board.current_player == BLACK) ? value : -value;
             backpropagate(leaf_idx, value_for_leaf_player);
         }
         else {
@@ -386,25 +393,15 @@ extern "C" {
         return true;
     }
 
-    // *** 新增函数实现 ***
     API void mcts_get_legal_moves_mask(void* manager_ptr, int game_index, float* mask_buffer) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         if (game_index < 0 || (size_t)game_index >= manager->searches.size()) {
-            // 如果索引无效，填充为0并返回
             std::fill(mask_buffer, mask_buffer + BOARD_SQUARES, 0.0f);
             return;
         }
-
-        // 加锁以保证线程安全
         std::lock_guard<std::mutex> lock(manager->mtx);
-
-        // 获取指定游戏的当前棋盘状态
         const Board* board = &manager->searches[game_index]->root_board;
-
-        // 生成合法走法的位棋盘
         Bitboards legal_moves_bb = get_legal_moves(board);
-
-        // 遍历所有棋盘位置，填充掩码
         for (int sq = 0; sq < BOARD_SQUARES; ++sq) {
             if (GET_BIT(legal_moves_bb, sq)) {
                 mask_buffer[sq] = 1.0f;
@@ -444,15 +441,25 @@ extern "C" {
         std::lock_guard<std::mutex> lock(manager->mtx);
         return get_game_result(&manager->searches[game_index]->root_board) != IN_PROGRESS;
     }
+
+    // MODIFIED: Return win/loss/draw value instead of normalized score
     API float mcts_get_final_value(void* manager_ptr, int game_index, int player_perspective) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         if (game_index < 0 || (size_t)game_index >= manager->searches.size()) return 0.0f;
+
         std::lock_guard<std::mutex> lock(manager->mtx);
         const Board* board = &manager->searches[game_index]->root_board;
-        int raw_score_diff = get_score_diff(board);
-        float normalized_score = static_cast<float>(raw_score_diff) / static_cast<float>(BOARD_SQUARES);
-        return (player_perspective == BLACK) ? normalized_score : -normalized_score;
+        GameResult result = get_game_result(board);
+
+        float value = 0.0f;
+        if (result == BLACK_WIN) value = 1.0f;
+        else if (result == WHITE_WIN) value = -1.0f;
+        // Draw remains 0.0f
+
+        // Return value from the perspective of the requested player
+        return (player_perspective == BLACK) ? value : -value;
     }
+
     API int mcts_get_analysis_data(void* manager_ptr, int game_index, int* moves_buffer, float* q_values_buffer, int* visit_counts_buffer, float* puct_scores_buffer, int buffer_size) {
         MCTSManager* manager = static_cast<MCTSManager*>(manager_ptr);
         if (game_index < 0 || (size_t)game_index >= manager->searches.size()) return 0;
