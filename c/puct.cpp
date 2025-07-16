@@ -8,8 +8,13 @@
 // C-style API Implementations
 extern "C" {
 
+    // This constant defines the default size for the transposition table
+    // when created from the Python side, which doesn't specify a size.
+    const size_t DEFAULT_TT_MAX_SIZE = 10000;
+
     API void* create_mcts_manager(int num_games, bool enable_noise, double initial_fpu) {
-        return new MCTSManager(num_games, enable_noise, initial_fpu);
+        // Correctly call the 4-argument constructor defined in mcts_manager.h/cpp
+        return new MCTSManager(num_games, enable_noise, initial_fpu, DEFAULT_TT_MAX_SIZE);
     }
 
     API void destroy_mcts_manager(void* manager_ptr) {
@@ -29,9 +34,17 @@ extern "C" {
 
             Board& current_board_state = manager->game_boards[i];
 
+            // FIFO Cache replacement logic for the transposition table
             if (manager->transposition_table.find(current_board_state) == manager->transposition_table.end()) {
+                if (manager->transposition_table.size() >= manager->max_tt_size) {
+                    Board oldest_board = manager->tt_insertion_order.front();
+                    manager->tt_insertion_order.pop();
+                    manager->transposition_table.erase(oldest_board);
+                }
                 manager->transposition_table[current_board_state] = std::make_shared<MCTSSearch>(&current_board_state, manager->enable_noise, manager->initial_fpu);
+                manager->tt_insertion_order.push(current_board_state);
             }
+
             auto search = manager->transposition_table.at(current_board_state);
 
             if (search->pending_evaluation_leaf_idx == INVALID_INDEX) {
@@ -177,7 +190,6 @@ extern "C" {
             std::fill(mask_buffer, mask_buffer + BOARD_SQUARES, 0.0f);
             return;
         }
-
         const Board* board = &manager->game_boards[game_index];
         Bitboards legal_moves_bb = get_legal_moves(board);
         for (int sq = 0; sq < BOARD_SQUARES; ++sq) {

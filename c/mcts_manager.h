@@ -7,10 +7,11 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <queue> // 用于实现FIFO队列
 
 /**
  * @struct BoardHasher
- * @brief 为Board结构体提供哈希函数，使其可以作为unordered_map的键。
+ * @brief 为Board结构体提供哈希函数。
  */
 struct BoardHasher {
     std::size_t operator()(const Board& b) const;
@@ -18,7 +19,7 @@ struct BoardHasher {
 
 /**
  * @struct BoardEqual
- * @brief 为Board结构体提供相等比较函数，用于哈希表。
+ * @brief 为Board结构体提供相等比较函数。
  */
 struct BoardEqual {
     bool operator()(const Board& a, const Board& b) const;
@@ -26,29 +27,23 @@ struct BoardEqual {
 
 /**
  * @class MCTSManager
- * @brief 管理多个并行的MCTS搜索实例。
- *
- * 这个类是连接Python和C++核心逻辑的桥梁。它负责：
- * 1. 维护所有并行游戏的当前棋盘状态。
- * 2. 持有一个置换表（transposition_table），用于在不同游戏间共享相同局面的MCTS搜索树，
- * 避免重复计算。
- * 3. 处理来自Python的请求，分发给对应的MCTSSearch实例。
+ * @brief 管理多个并行的MCTS搜索实例，并实现一个带大小限制的置换表。
  */
 class MCTSManager {
 public:
-    // 置换表：键是棋盘状态，值是指向对应MCTS搜索树的共享指针。
+    // 置换表
     std::unordered_map<Board, std::shared_ptr<MCTSSearch>, BoardHasher, BoardEqual> transposition_table;
 
-    // 存储所有并行游戏的当前棋盘状态。
+    // MODIFIED: 用于实现FIFO缓存的队列
+    std::queue<Board> tt_insertion_order;
+
+    // MODIFIED: 置换表的最大容量
+    const size_t max_tt_size;
+
     std::vector<Board> game_boards;
-
-    // 临时存储当前等待神经网络评估的请求。
     std::vector<std::pair<Board, std::shared_ptr<MCTSSearch>>> pending_requests;
-
-    // 互斥锁，用于保证多线程环境下的线程安全。
     std::mutex mtx;
 
-    // 配置参数
     int num_games;
     bool enable_noise;
     double initial_fpu;
@@ -58,12 +53,10 @@ public:
      * @param num_games_p 要管理的并行游戏数量。
      * @param enable_noise_p 是否启用狄利克雷噪声。
      * @param initial_fpu_p FPU的初始值。
+     * @param tt_size 置换表的最大容量。
      */
-    MCTSManager(int num_games_p, bool enable_noise_p, double initial_fpu_p);
+    MCTSManager(int num_games_p, bool enable_noise_p, double initial_fpu_p, size_t tt_size);
 
-    /**
-     * @brief 析构函数。
-     */
     ~MCTSManager();
 };
 
