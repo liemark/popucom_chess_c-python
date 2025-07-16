@@ -67,12 +67,8 @@ https://github.com/liemark/popucom_chess
 一个自动化脚本，用于循环执行自对弈数据生成和模型训练，实现强化学习的持续迭代过程。
 ### popucom_chess_gui.py
 游玩的ui界面。
-### game.h 和 game.cpp
-定义泡姆棋的游戏规则、棋盘状态和落子逻辑。
-### puct.h 和 puct.cpp
-实现基于神经网络的 PUCT (Polynomial Upper Confidence Trees) 搜索算法，用于在自对弈和评估中选择最佳行动。
 ### popucom_core.dll
-由 game.h/game.cpp/puct.h/puct.cpp 编译获得
+由C++代码编译获得
 ## 强化学习流水线
 本项目采用 AlphaGo Zero 风格的强化学习流水线，通过模型自对弈和训练的循环来不断提升 AI 的棋力：
 ### 自对弈 (self_play_worker.py):
@@ -92,7 +88,7 @@ run_pipeline.py 脚本自动化了上述两个步骤。它会不断循环：
 ## 如何运行
 确保您已安装 Python 3.x 和 PyTorch。  
 各种软件包缺什么下什么  
-对 game.h/game.cpp/puct.h/puct.cpp 编译获得 popucom_core.dll  
+对C++文件夹内所有文件编译获得 popucom_core.dll  
 生成初始数据并训练:  
 首次运行，由于没有 model.pth，self_play_worker.py 会使用随机权重模型。  
 运行训练流水线：
