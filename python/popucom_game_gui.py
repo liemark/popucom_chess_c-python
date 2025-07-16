@@ -7,7 +7,6 @@ import threading
 import time
 import ctypes
 import platform
-from torch.amp import autocast
 
 # 确保从正确的文件导入
 from popucom_nn_model import PomPomNN
@@ -152,8 +151,8 @@ class PomPomGUI:
         ai_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
 
         tk.Label(ai_frame, text="搜索模拟次数:").grid(row=0, column=0, sticky='w')
-        self.ai_sims_slider = Scale(ai_frame, from_=50, to=5000, orient=tk.HORIZONTAL, resolution=50, length=200);
-        self.ai_sims_slider.set(800);
+        self.ai_sims_slider = Scale(ai_frame, from_=50, to=6000, orient=tk.HORIZONTAL, resolution=50, length=200);
+        self.ai_sims_slider.set(1200);
         self.ai_sims_slider.grid(row=0, column=1, sticky='ew')
 
         tk.Label(ai_frame, text="落子温度:").grid(row=1, column=0, sticky='w')
@@ -384,11 +383,11 @@ class PomPomGUI:
                 if p_color:
                     self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius,
                                             fill=p_color, outline="black", width=1.5)
-                    if self._last_move_coords == (r, c): self.canvas.create_oval(center_x - radius / 4,
-                                                                                 center_y - radius / 4,
-                                                                                 center_x + radius / 4,
-                                                                                 center_y + radius / 4, fill="white",
-                                                                                 outline="black")
+                if self._last_move_coords == (r, c): self.canvas.create_oval(center_x - radius / 4,
+                                                                             center_y - radius / 4,
+                                                                             center_x + radius / 4,
+                                                                             center_y + radius / 4, fill="white",
+                                                                             outline="black")
 
         if self.analysis_data:
             fnt = font.Font(family='Helvetica', size=max(4, int(self.cell_size / 16)), weight='bold')
@@ -472,8 +471,10 @@ class PomPomGUI:
         self._continue_game_flow()
 
     def _undo_move(self):
-        if self.current_node and self.current_node.parent:
-            self._navigate_to_node(self.current_node.parent)
+        steps = 2 if self.game_mode.get() == "human_vs_ai" else 1
+        for _ in range(steps):
+            if self.current_node and self.current_node.parent:
+                self._navigate_to_node(self.current_node.parent)
 
     def _on_listbox_select(self, event):
         selection = self.game_view.curselection()
