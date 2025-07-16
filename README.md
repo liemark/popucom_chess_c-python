@@ -60,7 +60,7 @@ https://github.com/liemark/popucom_chess
 ### popucom_puct.py
 实现基于神经网络的 PUCT (Polynomial Upper Confidence Trees) 搜索算法，用于在自对弈和评估中选择最佳行动。
 ### self_play_worker.py
-负责生成自对弈数据。它使用当前训练好的神经网络和 PUCT 搜索来玩游戏，并记录游戏过程中的状态、MCTS 策略和最终结果。（建议根据自己的机器修改线程数）
+负责生成自对弈数据。它使用当前训练好的神经网络和 PUCT 搜索来玩游戏，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）
 ### train_model.py
 负责神经网络的训练。它加载 self_play_worker.py 生成的自对弈数据，并使用这些数据来更新神经网络的权重。（建议根据自己的机器适当修改）
 ### run_pipeline.py
@@ -95,4 +95,3 @@ run_pipeline.py 脚本自动化了上述两个步骤。它会不断循环：
 ```
 python run_pipeline.py
 ```
-从老项目 popucom_chess 改过来的，主要是使用批处理的方法一次生成大量对局，从而大幅度加速训练过程
