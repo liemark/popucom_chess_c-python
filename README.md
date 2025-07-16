@@ -4,7 +4,6 @@ https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
 https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 ```
-目前仅需训练6h即可达到人类顶尖水平，24h远超任何人类（7950x+5080）  
 如需根据计算资源修改参数，建议查看 self_play_worker.py 与 train_model.py  
 六月初纯python写的旧项目连接：
 ```
