@@ -12,7 +12,10 @@ from popucom_nn_model import PomPomNN
 from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE, MAX_MOVES_PER_PLAYER
 
 # --- 全局配置 ---
-MCTS_SIMULATIONS = 1200 # 提高上限
+# 目前主要还在测试哪些改进提升的最大，实际上可以用Playout Cap Randomization
+# 25%的概率搜索 1200 节点，75%的概率搜索 200 节点
+# 但由于对训练速度提升并不大，反而并没有添加
+MCTS_SIMULATIONS = 1200
 NUM_PARALLEL_GAMES = 512
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 MODEL_PATH = "model.pth"
@@ -82,7 +85,7 @@ class GameBatchRunner:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device).eval()
 
-        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 0.02)  # Use a small FPU value
+        self.mcts_manager = c_lib.create_mcts_manager(num_games, True, 0.0)  # Use a small FPU value
         self.game_histories = [[] for _ in range(num_games)]
         self.move_counts = [0] * num_games
         self.active_games = list(range(num_games))
