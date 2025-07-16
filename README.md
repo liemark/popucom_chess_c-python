@@ -65,7 +65,7 @@ https://github.com/liemark/popucom_chess
 ### run_pipeline.py
 一个自动化脚本，用于循环执行自对弈数据生成和模型训练，实现强化学习的持续迭代过程。
 ### popucom_chess_gui.py
-游玩的ui界面。目前提供**人人/人机/机机**对弈功能，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型。
+游玩的ui界面。目前提供**人人/人机/机机**对弈功能，并加入了**对局树**~~虽然比较丑~~便于复盘分析，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型。
 ### popucom_core.dll
 由C++代码编译获得
 ## 强化学习流水线
