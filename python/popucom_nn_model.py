@@ -63,7 +63,7 @@ class PomPomNN(nn.Module):
     """
     ACTUAL_INPUT_CHANNELS = NUM_INPUT_CHANNELS + 2
 
-    def __init__(self, num_res_blocks=6, num_filters=96):
+    def __init__(self, num_res_blocks=8, num_filters=96): # 改为8层但不增加通道数量，便于信息长距离传播
         super(PomPomNN, self).__init__()
         self.num_res_blocks = num_res_blocks
         self.num_filters = num_filters
