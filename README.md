@@ -1,6 +1,6 @@
 提供一个exe文件（存在一些字体不清晰的bug，不明白打包前和打包后为什么有差异，但至少不影响使用，就先不修了）以便于体验，目前内置0716模型，比较适合真人对弈：
 ```
-链接: https://pan.baidu.com/s/1GTafRE6_-Fj-tNaqx3Speg?pwd=2333
+链接: https://pan.baidu.com/s/18wJM3pfKcVaThANVlOH5IQ?pwd=2333
 提取码: 2333
 ```
 
