@@ -10,7 +10,7 @@ extern "C" {
 
     // This constant defines the default size for the transposition table
     // when created from the Python side, which doesn't specify a size.
-    const size_t DEFAULT_TT_MAX_SIZE = 10000;
+    const size_t DEFAULT_TT_MAX_SIZE = 20000;
 
     API void* create_mcts_manager(int num_games, bool enable_noise, double initial_fpu) {
         // Correctly call the 4-argument constructor defined in mcts_manager.h/cpp
