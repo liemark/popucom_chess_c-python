@@ -73,7 +73,7 @@ https://github.com/liemark/popucom_chess
 ### popucom_chess_gui.py
 游玩的ui界面。目前提供**人人/人机/机机**对弈功能，并加入了**对局树**~~虽然比较丑~~便于复盘分析，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型。
 ### popucom_core.dll
-由C++代码编译获得
+由C++代码编译获得，如果爆内存建议手动修改（置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE和每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY）
 ## 强化学习流水线
 本项目采用 AlphaGo Zero 风格的强化学习流水线，通过模型自对弈和训练的循环来不断提升 AI 的棋力：
 ### 自对弈 (self_play_worker.py):
