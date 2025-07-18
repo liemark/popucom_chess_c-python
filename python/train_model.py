@@ -55,7 +55,7 @@ class PopucomDataset(Dataset):
         return state, policy, value
 
 
-def load_data(data_dir, max_files=30):
+def load_data(data_dir, max_files=4):
     """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
@@ -80,7 +80,7 @@ def get_args():
     parser.add_argument('--model-path', type=str, default='model.pth', help='模型加载和保存的路径')
     parser.add_argument('--epochs', type=int, default=1, help='训练的总轮数 (推荐值为1)')
     parser.add_argument('--batch-size', type=int, default=256, help='训练批次大小')
-    parser.add_argument('--lr', type=float, default=5e-6, help='学习率')
+    parser.add_argument('--lr', type=float, default=1e-5, help='学习率')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='AdamW 优化器的权重衰减')
     parser.add_argument('--policy-weight', type=float, default=1.0, help='策略损失的权重')
     parser.add_argument('--value-weight', type=float, default=1.0, help='价值损失的权重')
@@ -95,10 +95,10 @@ def train_model(args):
     MODIFIED: Adapted for the simplified model and data.
     """
     print("--- 开始模型训练 ---")
-    print("当前配置:")
-    for k, v in vars(args).items():
-        print(f"  {k}: {v}")
-    print("--------------------")
+    #print("当前配置:")
+    #for k, v in vars(args).items():
+    #    print(f"  {k}: {v}")
+    #print("--------------------")
 
     training_data = load_data(args.data_dir)
     if not training_data:
@@ -107,7 +107,7 @@ def train_model(args):
 
     use_augmentation = not args.no_augment
     dataset = PopucomDataset(training_data, augment=use_augmentation)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=1, pin_memory=True)
     print(f"成功加载 {len(training_data)} 条训练样本。数据增强已{'启用' if use_augmentation else '禁用'}。")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -21,7 +21,7 @@ class Board(ctypes.Structure): _fields_ = [("pieces", Bitboards * 2), ("tiles", 
                                            ("current_player", ctypes.c_int), ("moves_left", ctypes.c_int * 2)]
 
 
-# 更新C函数定义字典
+# 更新C函数定义字典，确保所有函数都被声明
 C_FUNCTIONS = {
     "init_board": (None, [ctypes.POINTER(Board)]),
     "copy_board": (None, [ctypes.POINTER(Board), ctypes.POINTER(Board)]),
@@ -46,7 +46,9 @@ C_FUNCTIONS = {
     "mcts_get_analysis_data": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int),
                                               ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_int),
                                               ctypes.POINTER(ctypes.c_float), ctypes.c_int]),
-    "mcts_reset_for_analysis": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(Board)])
+    "mcts_reset_for_analysis": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(Board)]),
+    # 修复：添加缺失的函数声明
+    "mcts_get_legal_moves_mask": (None, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_float)])
 }
 
 
@@ -201,42 +203,31 @@ class PomPomGUI:
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _setup_listbox_view(self, parent_frame):
-        """Sets up the game view using a Listbox, which handles scrolling correctly."""
         listbox_container = tk.Frame(parent_frame, bd=1, relief=tk.SUNKEN)
         listbox_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
-
         tk.Label(listbox_container, text="对局树", font=("Arial", 12, "bold")).pack(pady=(5, 0))
-
         list_frame = tk.Frame(listbox_container)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
         list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
-
         self.game_view = tk.Listbox(list_frame, font=("Courier", 10), selectmode=tk.SINGLE)
-
         ysb = ttk.Scrollbar(list_frame, orient='vertical', command=self.game_view.yview)
         xsb = ttk.Scrollbar(list_frame, orient='horizontal', command=self.game_view.xview)
         self.game_view.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
-
         self.game_view.grid(row=0, column=0, sticky='nsew')
         ysb.grid(row=0, column=1, sticky='ns')
         xsb.grid(row=1, column=0, sticky='ew')
-
         self.game_view.bind("<<ListboxSelect>>", self._on_listbox_select)
 
     def _update_game_view(self):
-        """Clears and rebuilds the Listbox based on the current game tree."""
         self.game_view.delete(0, tk.END)
         self.listbox_nodes.clear()
 
         def build_list(node, depth=0):
-            prefix = " " * depth
+            prefix = " " * (depth * 2)
             move_text = f"{prefix}{self._get_move_text(node)}"
-
             self.game_view.insert(tk.END, move_text)
             self.listbox_nodes.append(node)
-
             for move_sq in sorted(node.children.keys()):
                 build_list(node.children[move_sq], depth + 1)
 
@@ -244,38 +235,29 @@ class PomPomGUI:
         self._highlight_current_node_in_view()
 
     def _get_move_text(self, node):
-        """Generates the text for a move, e.g., '1. f3' or '1... h5'."""
-        if node.parent is None:
-            return "游戏开始"
-
+        if node.parent is None: return "游戏开始"
         board_before_move = node.parent.board_state
         turn_player = board_before_move.current_player
-
         total_moves_made = (MAX_MOVES_PER_PLAYER * 2) - (
                     board_before_move.moves_left[0] + board_before_move.moves_left[1])
         turn_number = total_moves_made // 2 + 1
-
         move_prefix = f"{turn_number}." if turn_player == BLACK_PLAYER else f"{turn_number}..."
         return f"{move_prefix} {self._coords_to_alg(node.move_sq)}"
 
     def _highlight_current_node_in_view(self):
-        """Finds and highlights the current node in the listbox."""
         try:
             idx = self.listbox_nodes.index(self.current_node)
             self.game_view.selection_clear(0, tk.END)
             self.game_view.selection_set(idx)
             self.game_view.activate(idx)
             self.game_view.see(idx)
-        except ValueError:
+        except (ValueError, tk.TclError):
             pass
 
     def _on_resize(self, event):
         new_size = min(event.width, event.height)
         new_cell_size = new_size // BOARD_SIZE - 1
-
-        if new_cell_size < 20 or abs(new_cell_size - self.cell_size) < 2:
-            return
-
+        if new_cell_size < 20 or abs(new_cell_size - self.cell_size) < 2: return
         self.cell_size = new_cell_size
         self.draw_board()
 
@@ -286,60 +268,59 @@ class PomPomGUI:
         return f"{'abcdefghi'[col]}{row + 1}"
 
     def _on_fpu_change(self, value):
-        if self.mcts_manager_gui:
-            c_lib.mcts_set_fpu(self.mcts_manager_gui, float(value))
+        if self.mcts_manager_gui: c_lib.mcts_set_fpu(self.mcts_manager_gui, float(value))
 
     def _on_noise_toggle(self):
         is_enabled = self.dirichlet_noise_enabled.get()
         if self.mcts_manager_gui: c_lib.mcts_set_noise_enabled(self.mcts_manager_gui, is_enabled)
 
+    def _stop_ai_thread(self):
+        """A helper function to safely stop any running AI thread."""
+        if self.ai_thread and self.ai_thread.is_alive():
+            self.game_running = False
+            self.ai_thread.join(timeout=0.5)
+        self.game_running = True  # Reset flag for the new state
+
     def _on_closing(self):
-        if self.ai_thread and self.ai_thread.is_alive(): self.game_running = False
+        self._stop_ai_thread()
         if self.mcts_manager_gui: c_lib.destroy_mcts_manager(self.mcts_manager_gui)
         self.master.destroy()
 
     def _on_mode_change(self):
+        self._stop_ai_thread()
         mode = self.game_mode.get()
         self.role_frame.pack(side=tk.LEFT, fill=tk.Y,
                              padx=5) if mode == "human_vs_ai" else self.role_frame.pack_forget()
+        self._update_human_player()
+        self._continue_game_flow()
 
+    def _update_human_player(self):
         choice = self.human_player_choice.get()
         self.human_player, self.ai_player = (BLACK_PLAYER, WHITE_PLAYER) if choice == "human_black" else (
         WHITE_PLAYER, BLACK_PLAYER)
-        self._continue_game_flow()
 
     def _reset_and_start_new_game(self):
-        if self.ai_thread and self.ai_thread.is_alive(): self.game_running = False; self.ai_thread.join(timeout=0.5)
+        self._stop_ai_thread()
         c_lib.init_board(ctypes.byref(self.board_c))
-
         board_copy = Board()
         c_lib.copy_board(ctypes.byref(self.board_c), ctypes.byref(board_copy))
         self.game_tree_root = GameTreeNode(board_copy)
-        self.current_node = self.game_tree_root
-
-        self._update_game_view()
-
-        if self.mcts_manager_gui: c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
-        self._last_move_coords, self.analysis_data, self.best_puct_move, self.best_visit_move = None, {}, None, None
-
-        choice = self.human_player_choice.get()
-        self.human_player, self.ai_player = (BLACK_PLAYER, WHITE_PLAYER) if choice == "human_black" else (
-        WHITE_PLAYER, BLACK_PLAYER)
-
-        self.game_running = True
-        self._continue_game_flow()
+        self._navigate_to_node(self.game_tree_root)  # Use navigate to set initial state
 
     def _continue_game_flow(self):
         self.draw_board()
         self._update_status_labels()
         self._toggle_ui_elements(True)
         game_result = c_lib.get_game_result(ctypes.byref(self.board_c))
-        if game_result != IN_PROGRESS: self._handle_game_over(game_result); return
-        mode, player = self.game_mode.get(), self.board_c.current_player
+        if game_result != IN_PROGRESS:
+            self._handle_game_over(game_result)
+            return
+        mode = self.game_mode.get()
+        player = self.board_c.current_player
         is_ai_turn = (mode == "ai_vs_ai") or (mode == "human_vs_ai" and player == self.ai_player)
         if is_ai_turn and self.game_running:
             self._toggle_ui_elements(False)
-            self.ai_thread = threading.Thread(target=self._ai_turn_logic, daemon=True);
+            self.ai_thread = threading.Thread(target=self._ai_turn_logic, daemon=True)
             self.ai_thread.start()
 
     def _handle_game_over(self, result):
@@ -358,7 +339,6 @@ class PomPomGUI:
         self.canvas.delete("all")
         board_pixel_size = BOARD_SIZE * self.cell_size
         self.canvas.config(width=board_pixel_size, height=board_pixel_size)
-
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 sq = r * BOARD_SIZE + c
@@ -370,7 +350,6 @@ class PomPomGUI:
                 elif c_lib.is_bit_set(ctypes.byref(self.board_c.tiles[WHITE_PLAYER]), sq):
                     color = WHITE_PAINTED_FLOOR_COLOR
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline=GRID_LINE_COLOR, width=1)
-
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 sq = r * BOARD_SIZE + c
@@ -383,12 +362,9 @@ class PomPomGUI:
                 if p_color:
                     self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius,
                                             fill=p_color, outline="black", width=1.5)
-                if self._last_move_coords == (r, c): self.canvas.create_oval(center_x - radius / 4,
-                                                                             center_y - radius / 4,
-                                                                             center_x + radius / 4,
-                                                                             center_y + radius / 4, fill="white",
-                                                                             outline="black")
-
+                if self._last_move_coords == (r, c):
+                    self.canvas.create_oval(center_x - radius / 4, center_y - radius / 4, center_x + radius / 4,
+                                            center_y + radius / 4, fill="white", outline="black")
         if self.analysis_data:
             fnt = font.Font(family='Helvetica', size=max(4, int(self.cell_size / 16)), weight='bold')
             for (r, c), data in self.analysis_data.items():
@@ -402,15 +378,14 @@ class PomPomGUI:
                 self.canvas.create_text(center_x, center_y, text=visits_text, fill="black", font=fnt)
                 self.canvas.create_text(center_x, center_y + self.cell_size * 0.25, text=puct_text, fill="#006400",
                                         font=fnt)
-
         if self.best_puct_move:
-            r, c = self.best_puct_move;
-            x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
-            self.canvas.create_rectangle(x1 + 6, y1 + 6, x2 - 6, y2 - 6, outline="orange", width=3, dash=(4, 4))
+            r, c = self.best_puct_move
+            self.canvas.create_rectangle(c * self.cell_size + 6, r * self.cell_size + 6, (c + 1) * self.cell_size - 6,
+                                         (r + 1) * self.cell_size - 6, outline="orange", width=3, dash=(4, 4))
         if self.best_visit_move:
-            r, c = self.best_visit_move;
-            x1, y1, x2, y2 = c * self.cell_size, r * self.cell_size, (c + 1) * self.cell_size, (r + 1) * self.cell_size
-            self.canvas.create_rectangle(x1 + 3, y1 + 3, x2 - 3, y2 - 3, outline="red", width=3)
+            r, c = self.best_visit_move
+            self.canvas.create_rectangle(c * self.cell_size + 3, r * self.cell_size + 3, (c + 1) * self.cell_size - 3,
+                                         (r + 1) * self.cell_size - 3, outline="red", width=3)
 
     def _update_status_labels(self):
         player, name, color = self.board_c.current_player, "红方" if self.board_c.current_player == 0 else "绿方", BLACK_PIECE_COLOR if self.board_c.current_player == 0 else WHITE_PIECE_COLOR
@@ -435,9 +410,9 @@ class PomPomGUI:
 
     def _handle_click(self, event):
         mode = self.game_mode.get()
-        is_human = (mode == "human_vs_human") or (
+        is_human_turn = (mode == "human_vs_human") or (
                     mode == "human_vs_ai" and self.board_c.current_player == self.human_player)
-        if not self.game_running or not is_human: return
+        if not self.game_running or not is_human_turn: return
         if self.cell_size == 0: return
         c, r = event.x // self.cell_size, event.y // self.cell_size
         if 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE: self._process_move(r * BOARD_SIZE + c)
@@ -447,39 +422,39 @@ class PomPomGUI:
         if not c_lib.is_bit_set(ctypes.byref(legal_bb), sq):
             if not from_ai: messagebox.showwarning("非法落子", "该位置不符合落子规则。")
             return
-
-        # BUG FIX: Correctly advance the current_node pointer.
         if sq not in self.current_node.children:
-            # If the move is new, create a new node
             board_after_move = Board()
-            # The board state for the new node should be calculated from the current node's board state
             c_lib.copy_board(ctypes.byref(self.current_node.board_state), ctypes.byref(board_after_move))
             c_lib.make_move(ctypes.byref(board_after_move), sq)
-
             new_node = GameTreeNode(board_after_move, move_sq=sq, parent=self.current_node)
             self.current_node.children[sq] = new_node
-
-        # Now, advance to the child node (whether it was new or existing)
-        self.current_node = self.current_node.children[sq]
-
-        c_lib.copy_board(ctypes.byref(self.current_node.board_state), ctypes.byref(self.board_c))
-        self._last_move_coords = (sq // BOARD_SIZE, sq % BOARD_SIZE)
-        self.analysis_data, self.best_puct_move, self.best_visit_move = {}, None, None
-        if self.mcts_manager_gui: c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
-
-        self._update_game_view()
-        self._continue_game_flow()
+        self._navigate_to_node(self.current_node.children[sq])
 
     def _undo_move(self):
-        steps = 2 if self.game_mode.get() == "human_vs_ai" else 1
-        for _ in range(steps):
-            if self.current_node and self.current_node.parent:
-                self._navigate_to_node(self.current_node.parent)
+        """FIXED: Intelligent undo logic."""
+        self._stop_ai_thread()
+        if not self.current_node or not self.current_node.parent: return
+
+        mode = self.game_mode.get()
+        if mode == "human_vs_ai":
+            # In H-vs-AI mode, undo until it's the human's turn.
+            target_node = self.current_node.parent
+            # If it's already human's turn, we need to go back one more step (to their previous turn)
+            if target_node.board_state.current_player == self.human_player:
+                if target_node.parent:
+                    target_node = target_node.parent
+
+            # Now, keep going back until we find a state where it's the human's turn
+            while target_node.parent and target_node.board_state.current_player != self.human_player:
+                target_node = target_node.parent
+            self._navigate_to_node(target_node)
+        else:
+            # For other modes, just undo one step.
+            self._navigate_to_node(self.current_node.parent)
 
     def _on_listbox_select(self, event):
         selection = self.game_view.curselection()
         if not selection: return
-
         selected_index = selection[0]
         if 0 <= selected_index < len(self.listbox_nodes):
             node_to_visit = self.listbox_nodes[selected_index]
@@ -487,48 +462,53 @@ class PomPomGUI:
                 self._navigate_to_node(node_to_visit)
 
     def _navigate_to_node(self, node):
+        """Central function to change the current game state to a specific node."""
+        self._stop_ai_thread()
         self.current_node = node
         c_lib.copy_board(ctypes.byref(self.current_node.board_state), ctypes.byref(self.board_c))
-
         if self.current_node.move_sq is not None:
             sq = self.current_node.move_sq
             self._last_move_coords = (sq // BOARD_SIZE, sq % BOARD_SIZE)
         else:
             self._last_move_coords = None
-
         self.analysis_data, self.best_puct_move, self.best_visit_move = {}, None, None
         if self.mcts_manager_gui: c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
-        self.game_running = True
-
+        self.game_running = (c_lib.get_game_result(ctypes.byref(self.board_c)) == IN_PROGRESS)
         self._update_game_view()
         self._continue_game_flow()
 
     def _toggle_analysis(self):
-        if self.analysis_data: self.analysis_data, self.best_puct_move, self.best_visit_move = {}, None, None; self.draw_board(); return
+        if self.analysis_data:
+            self.analysis_data, self.best_puct_move, self.best_visit_move = {}, None, None
+            self.draw_board()
+            return
         if not self.game_running: return
-        self._toggle_ui_elements(False);
+        self._toggle_ui_elements(False)
         self.analyze_button.config(text="分析中...")
-        threading.Thread(target=self._run_analysis_thread, daemon=True).start()
+        self.ai_thread = threading.Thread(target=self._run_analysis_thread, daemon=True)
+        self.ai_thread.start()
 
     def _run_analysis_thread(self):
-        sims = self.ai_sims_slider.get();
-        if self.mcts_manager_gui: c_lib.mcts_reset_for_analysis(self.mcts_manager_gui, 0, ctypes.byref(self.board_c))
-        self._run_mcts_loop(sims, is_analysis=True)
-        moves, q_vals, visits, pucts = (ctypes.c_int * 81)(), (ctypes.c_float * 81)(), (ctypes.c_int * 81)(), (
-                    ctypes.c_float * 81)()
-        num_moves = c_lib.mcts_get_analysis_data(self.mcts_manager_gui, 0, moves, q_vals, visits, pucts, 81)
-        temp_data, best_p_move, best_puct, best_v_move, best_visits = {}, None, -float('inf'), None, -1
-        for i in range(num_moves):
-            r, c = moves[i] // BOARD_SIZE, moves[i] % BOARD_SIZE
-            temp_data[(r, c)] = {"q": q_vals[i], "visits": visits[i], "puct": pucts[i]}
-            if pucts[i] > best_puct: best_puct, best_p_move = pucts[i], (r, c)
-            if visits[i] > best_visits: best_visits, best_v_move = visits[i], (r, c)
+        try:
+            sims = self.ai_sims_slider.get()
+            # The MCTS manager is already reset to the current node's state by _navigate_to_node
+            self._run_mcts_loop(sims, is_analysis=True)
+            moves, q_vals, visits, pucts = (ctypes.c_int * 81)(), (ctypes.c_float * 81)(), (ctypes.c_int * 81)(), (
+                        ctypes.c_float * 81)()
+            num_moves = c_lib.mcts_get_analysis_data(self.mcts_manager_gui, 0, moves, q_vals, visits, pucts, 81)
+            temp_data, best_p_move, best_puct, best_v_move, best_visits = {}, None, -float('inf'), None, -1
+            for i in range(num_moves):
+                r, c = moves[i] // BOARD_SIZE, moves[i] % BOARD_SIZE
+                temp_data[(r, c)] = {"q": q_vals[i], "visits": visits[i], "puct": pucts[i]}
+                if pucts[i] > best_puct: best_puct, best_p_move = pucts[i], (r, c)
+                if visits[i] > best_visits: best_visits, best_v_move = visits[i], (r, c)
 
-        def update_gui():
-            self.analysis_data, self.best_puct_move, self.best_visit_move = temp_data, best_p_move, best_v_move
-            self.draw_board();
-            self._toggle_ui_elements(True);
-            self.analyze_button.config(text="分析")
+            def update_gui():
+                self.analysis_data, self.best_puct_move, self.best_visit_move = temp_data, best_p_move, best_v_move
+                self.draw_board()
+        finally:
+            # Ensure UI is re-enabled even if an error occurs
+            self.master.after(0, lambda: (self._toggle_ui_elements(True), self.analyze_button.config(text="分析")))
 
         self.master.after(0, update_gui)
 
@@ -536,24 +516,30 @@ class PomPomGUI:
         if self.game_mode.get() == "ai_vs_ai": time.sleep(0.3)
         sims = self.ai_sims_slider.get()
         self._run_mcts_loop(sims)
-        policy_buffer = (ctypes.c_float * 81)();
+        if not self.game_running: return  # Check if game was stopped during search
+        policy_buffer = (ctypes.c_float * 81)()
         c_lib.mcts_get_policy(self.mcts_manager_gui, 0, policy_buffer)
         policy_np = np.ctypeslib.as_array(policy_buffer)
         temp = self.temperature_slider.get()
+        move = -1
         if temp > 0:
-            probs = policy_np ** (1.0 / temp)
             legal_bb = c_lib.get_legal_moves(ctypes.byref(self.board_c))
+            probs = policy_np ** (1.0 / temp)
             for sq in range(81):
                 if not c_lib.is_bit_set(ctypes.byref(legal_bb), sq): probs[sq] = 0
             sum_p = np.sum(probs)
-            if sum_p > 1e-8:
-                move = np.random.choice(81, p=probs / sum_p)
-            else:
-                legal_idx = [sq for sq in range(81) if c_lib.is_bit_set(ctypes.byref(legal_bb), sq)]
-                move = np.random.choice(legal_idx) if legal_idx and self.game_running else -1
+            if sum_p > 1e-8: move = np.random.choice(81, p=probs / sum_p)
         else:
-            move = np.argmax(policy_np)
-        if self.game_running and move != -1: self.master.after(0, self._process_move, move, True)
+            # When temp is 0, pick the best move according to policy, respecting legal moves
+            legal_bb = c_lib.get_legal_moves(ctypes.byref(self.board_c))
+            best_prob = -1
+            for sq in range(81):
+                if c_lib.is_bit_set(ctypes.byref(legal_bb), sq) and policy_np[sq] > best_prob:
+                    best_prob = policy_np[sq]
+                    move = sq
+
+        if self.game_running and move != -1:
+            self.master.after(0, self._process_move, move, True)
 
     def _run_mcts_loop(self, num_sims, is_analysis=False):
         while c_lib.mcts_get_simulations_done(self.mcts_manager_gui, 0) < num_sims:

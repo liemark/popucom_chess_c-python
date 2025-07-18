@@ -44,7 +44,7 @@ def main():
                       dummy_input,  # 虚拟输入
                       MODEL_PATH_ONNX,  # 输出文件名
                       export_params=True,  # 导出训练好的权重
-                      opset_version=11,  # ONNX版本
+                      opset_version=14,  # ONNX版本
                       do_constant_folding=True,  # 执行常量折叠优化
                       input_names=['input'],  # 输入张量的名字
                       output_names=['policy', 'value', 'soft_policy'],  # 输出张量的名字
