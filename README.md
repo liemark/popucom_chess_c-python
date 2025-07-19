@@ -8,7 +8,7 @@
 提取码: 2333
 ```
 
-本项目使用了katago与alphazero等项目的一些优化技术，以及相对位置偏置的注意力模块（还远没到瓶颈，注意力计算的开销较大，目前还不必要）
+本项目使用了katago与alphazero等项目的一些优化技术，以及相对位置偏置的注意力模块
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
