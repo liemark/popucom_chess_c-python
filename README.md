@@ -11,18 +11,19 @@
 本项目AI**远超任何人类**，目前的提升判断依赖于隔一段时间随缘储存一次的基准模型
 
 本项目使用了katago与alphazero等项目的一些优化技术  
-以及针对泡姆棋的修改  
-**相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
->U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
-
-**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
 主要参考资料：
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
 https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 ```
-如需根据计算资源修改参数，建议查看 self_play_worker.py 与 train_model.py  
+以及针对泡姆棋的修改  
+**相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
+>U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
+
+**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
+
+如需根据计算资源修改参数，建议查看 self_play_worker.py 与 train_model.py 以及 C++ 代码  
 六月初纯python写的旧项目连接：
 ```
 https://github.com/liemark/popucom_chess
