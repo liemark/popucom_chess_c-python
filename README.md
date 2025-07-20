@@ -10,7 +10,7 @@
 
 本项目使用了katago与alphazero等项目的一些优化技术  
 以及针对泡姆棋的修改  
-**相对位置偏置的注意力模块**  
+**相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
 **分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**
 ```
 https://katagotraining.org/
