@@ -73,12 +73,11 @@ https://github.com/liemark/popucom_chess
 一方无法落子： 如果某一方在自己的回合开始时，发现棋盘上已经没有合法的落子位置，则该方立即判负。这通常意味着棋盘上大部分区域已被对方占据或填满。
 ## 项目结构
 本项目由多个 Python 文件和多个 C++ 文件组成：
+>TensorRT版本的相关文件配置好ONNX/TensorRT后使用，具体说明懒得写了
 ### popucom_nn_interface.py 和 popucom_nn_model.py
 定义泡姆棋的神经网络模型架构（基于残差块），包含策略头和价值头。（通过在残差块中插入全局注意力模块进行了长程关系的改进，同时在注意力分数引入了相对坐标偏置以感知相对坐标）
-### popucom_puct.py
-实现基于神经网络的 PUCT (Polynomial Upper Confidence Trees) 搜索算法，用于在自对弈和评估中选择最佳行动。
 ### self_play_worker.py
-负责生成自对弈数据。它使用当前训练好的神经网络和 PUCT 搜索来玩游戏，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）
+负责生成自对弈数据。它使用当前训练好的神经网络和 PUCT 搜索来玩游戏，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
 ### train_model.py
 负责神经网络的训练。它加载 self_play_worker.py 生成的自对弈数据，并使用这些数据来更新神经网络的权重。（建议根据自己的机器适当修改）
 ### run_pipeline.py
@@ -90,7 +89,7 @@ https://github.com/liemark/popucom_chess
 ## 强化学习流水线
 本项目采用 AlphaGo Zero 风格的强化学习流水线，通过模型自对弈和训练的循环来不断提升 AI 的棋力：
 ### 自对弈 (self_play_worker.py):
-使用当前版本的神经网络模型（model.pth）和 PUCT 搜索进行多局游戏。  
+使用当前版本的神经网络模型（model.pth）和 MCTS 搜索进行多局游戏。  
 在每一步棋中，MCTS 搜索会根据当前模型评估棋盘状态，并给出更强的策略分布。  
 游戏过程中的棋盘状态、MCTS 产生的策略分布以及最终的游戏结果被记录下来，作为训练数据。  
 数据保存到 self_play_data/ 目录。
