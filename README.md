@@ -85,9 +85,9 @@ https://github.com/liemark/popucom_chess
 ### run_pipeline_trt.py
 一个自动化脚本，负责循环运行 self_play_worker_trt.py 自对弈生成棋谱、运行 train_model.py 生成 torch 的model.pth模型、运行 build_tensorrt_engine.py 生成 TensorRT 模型（与run_pipeline选其中一个用即可）  
 ### self_play_worker.py
-负责生成自对弈数据。它使用当前训练好的 torch 神经网络 model.pth 和 MCTS 搜索来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
+负责生成自对弈数据。它使用当前训练好的 torch 神经网络 model.pth 和 MCTS 来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
 ### self_play_worker_trt.py
-负责生成自对弈数据。它使用当前训练好的 TensorRT 神经网络 model.plan 和 MCTS 搜索来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
+负责生成自对弈数据。它使用当前训练好的 TensorRT 神经网络 model.plan 和 MCTS 来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
 ### train_model.py
 负责神经网络的训练。它加载 self_play_worker.py 生成的自对弈数据，并使用这些数据来更新神经网络的权重。（建议根据自己的机器适当修改）
 ### build_tensorrt_engine.py
@@ -105,7 +105,7 @@ https://github.com/liemark/popucom_chess
 >暂时没做并行处理，懒得改了
 
 ### popucom_core.dll
-由C++代码编译获得，如果爆内存建议手动修改
+由C++代码编译获得，负责 MCTS ，如果爆内存建议手动修改
 >置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE
 >每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY
 
