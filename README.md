@@ -1,3 +1,4 @@
+# 一些废话
 提供一个exe文件以便于体验：
 >CPU的ONNX引擎，存在一些字体不清晰的bug，不明白打包前和打包后为什么有差异，但至少不影响使用，就先不修了
 ```
@@ -78,41 +79,45 @@ https://github.com/liemark/popucom_chess
 ## 项目结构
 本项目由多个 Python 文件和多个 C++ 文件组成：
 >TensorRT版本的相关文件配置好ONNX/TensorRT后使用，具体说明懒得写了
-### popucom_nn_interface.py 和 popucom_nn_model.py
-定义泡姆棋的神经网络模型架构（基于残差块），包含策略头和价值头。（通过在残差块中插入全局注意力模块进行了长程关系的改进，同时在注意力分数引入了相对坐标偏置以感知相对坐标）
+
+### run_pipeline.py
+一个自动化脚本，负责循环运行 self_play_worker.py 自对弈生成棋谱以及运行 train_model.py 生成 torch 的model.pth模型  
+### run_pipeline_trt.py
+一个自动化脚本，负责循环运行 self_play_worker_trt.py 自对弈生成棋谱、运行 train_model.py 生成 torch 的model.pth模型、运行 build_tensorrt_engine.py 生成 TensorRT 模型（与run_pipeline选其中一个用即可）  
 ### self_play_worker.py
-负责生成自对弈数据。它使用当前训练好的神经网络和 PUCT 搜索来玩游戏，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
+负责生成自对弈数据。它使用当前训练好的 torch 神经网络 model.pth 和 MCTS 搜索来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
+### self_play_worker_trt.py
+负责生成自对弈数据。它使用当前训练好的 TensorRT 神经网络 model.plan 和 MCTS 搜索来自对弈，并记录游戏过程中的状态、MCTS 策略和最终结果，会同时进行大量对局以增加自对弈效率。（建议根据自己的机器修改线程数）  
 ### train_model.py
 负责神经网络的训练。它加载 self_play_worker.py 生成的自对弈数据，并使用这些数据来更新神经网络的权重。（建议根据自己的机器适当修改）
-### run_pipeline.py
-一个自动化脚本，用于循环执行自对弈数据生成和模型训练，实现强化学习的持续迭代过程。
+### build_tensorrt_engine.py
+用 model.pth 生成临时的ONNX模型 model_temp.onnx 然后再生成 TensorRT 模型 model.plan  
+### popucom_nn_interface.py 和 popucom_nn_model.py
+定义泡姆棋的神经网络模型架构（基于残差块），包含策略头和价值头。（通过在残差块中插入全局注意力模块进行了长程关系的改进，同时在注意力分数引入了相对坐标偏置以感知相对坐标）  
 ### popucom_chess_gui.py
-游玩的ui界面。目前提供**人人/人机/机机**对弈功能，并加入了**对局树**~~虽然比较丑~~便于复盘分析，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型。
+游玩的ui界面。目前提供**人人/人机/机机**对弈功能，并加入了**对局树**~~虽然比较丑~~便于复盘分析，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型  
+### popucom_chess_gui_onnx.py
+游玩的ui界面的onnx引擎版本，可运行**convert_to_onnx.py**以获得model.pth对应的的onnx模型 model.onnx  
+### convert_to_onnx.py
+将 model.pth 转换为 model.onnx 以供 popucom_chess_gui_onnx.py 使用  
+### arena_onnx.py
+将 convert_to_onnx.py 生成的模型命名为 model_a.onnx 和 model_b.onnx 对打测试  
+>暂时没做并行处理，懒得改了
+
 ### popucom_core.dll
-由C++代码编译获得，如果爆内存建议手动修改（置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE和每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY）
-## 强化学习流水线
-本项目采用 AlphaGo Zero 风格的强化学习流水线，通过模型自对弈和训练的循环来不断提升 AI 的棋力：
-### 自对弈 (self_play_worker.py):
-使用当前版本的神经网络模型（model.pth）和 MCTS 搜索进行多局游戏。  
-在每一步棋中，MCTS 搜索会根据当前模型评估棋盘状态，并给出更强的策略分布。  
-游戏过程中的棋盘状态、MCTS 产生的策略分布以及最终的游戏结果被记录下来，作为训练数据。  
-数据保存到 self_play_data/ 目录。
-### 模型训练 (train_model.py):
-加载 self_play_data/ 目录中最新生成的自对弈数据。  
-使用这些数据训练一个新的神经网络模型。训练目标是让模型的策略输出尽可能接近 MCTS 产生的策略分布，同时让模型的价值输出尽可能接近实际的游戏结果。  
-训练完成后，新的模型权重会保存为 model.pth，覆盖旧模型。
-### 迭代 (run_pipeline.py):
-run_pipeline.py 脚本自动化了上述两个步骤。它会不断循环：  
-运行 self_play_worker.py 生成新的自对弈数据。  
-运行 train_model.py 使用新数据训练模型。  
-这个循环使得 AI 能够从自己的经验中学习，不断提升棋力，无需人类专家数据。
+由C++代码编译获得，如果爆内存建议手动修改
+>置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE
+>每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY
+
 ## 如何运行
-确保您已安装 Python 3.x 和 PyTorch。  
+确保您已安装 Python 3.x 和 PyTorch  
+>TensorRT和ONNX可能还需要CUDA和CUDNN
+
 各种软件包缺什么下什么  
 对C++文件夹内所有文件编译获得 popucom_core.dll  
 生成初始数据并训练:  
-首次运行，由于没有 model.pth，self_play_worker.py 会使用随机权重模型。  
-运行训练流水线：
+首次运行，由于没有 model.pth，self_play_worker.py 会使用随机权重模型  
+运行训练：
 ```
 python run_pipeline.py
 ```
