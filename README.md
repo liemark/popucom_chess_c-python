@@ -8,7 +8,10 @@
 提取码: 2333
 ```
 
-本项目使用了katago与alphazero等项目的一些优化技术，以及相对位置偏置的注意力模块
+本项目使用了katago与alphazero等项目的一些优化技术
+以及针对泡姆棋的修改
+**相对位置偏置的注意力模块**
+**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
