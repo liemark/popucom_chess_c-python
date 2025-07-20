@@ -22,13 +22,13 @@ DATA_DIR = "self_play_data"
 TOTAL_GAME_CYCLES = 28
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
-# --- MODIFIED: 分阶段搜索 (Phased Search) 配置 ---
+# --- 分阶段搜索 (Phased Search) 配置 ---
 # 注：泡姆泡姆棋残局刚需枚举(搜索深度)
 # 而大局观部分无需太多算力
 # 因此做出如下划分，而非单纯的Playout Cap Randomization
 OPENING_PHASE_MOVES = 36  # 前36步棋被定义为开局/中盘阶段
 OPENING_SIMS = 400  # 开局/中盘阶段的模拟次数
-ENDGAME_SIMS = 3000  # 残局阶段的模拟次数
+ENDGAME_SIMS = 3600  # 残局阶段的模拟次数
 
 # --- 温度参数 ---
 TEMPERATURE_DECAY_MOVES = 10
@@ -234,7 +234,7 @@ class GameBatchRunner:
 
 
 if __name__ == "__main__":
-    print("开始批处理 MCTS 自对弈 (分阶段搜索优化版)...")
+    print("开始批处理 MCTS 自对弈...")
     try:
         model = PomPomNN()
         model.load_state_dict(torch.load(MODEL_PATH))
