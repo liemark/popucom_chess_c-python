@@ -1,3 +1,17 @@
+本项目**针对泡姆棋的修改**：  
+**相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
+>U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
+
+**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
+本项目没有明确的elo曲线（根本不爱存旧权重和旧棋谱），但有使用对打测试以确认技术改进的有效性  
+同时也主要使用了katago与alphazero等项目的优化技术  
+主要参考资料：
+```
+https://katagotraining.org/
+https://arxiv.org/pdf/1902.10565
+https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
+```
+
 提供一个exe文件以便于体验：
 >CPU的ONNX引擎，存在一些字体不清晰的bug，不明白打包前和打包后为什么有差异，但至少不影响使用，就先不修了
 ```
@@ -9,21 +23,6 @@
 提取码: 2333
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
 ```
-本项目没有明确的elo曲线（根本不爱存旧权重和旧棋谱），但有使用对打测试以确认技术改进的有效性  
-
-本项目使用了katago与alphazero等项目的一些优化技术  
-主要参考资料：
-```
-https://katagotraining.org/
-https://arxiv.org/pdf/1902.10565
-https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
-```
-以及**针对泡姆棋的修改**：  
-**相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
->U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
-
-**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
-
 如需根据计算资源修改参数，建议查看 self_play_worker.py 与 train_model.py 以及 C++ 代码  
 六月初纯python写的旧项目连接：
 ```
