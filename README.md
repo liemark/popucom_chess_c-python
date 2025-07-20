@@ -77,9 +77,7 @@ https://github.com/liemark/popucom_chess
 如果双方涂色地板数量相同，则判为平局  
 一方无法落子： 如果某一方在自己的回合开始时，发现棋盘上已经没有合法的落子位置，则该方立即判负，这通常意味着棋盘上大部分区域已被对方占据或填满
 ## 项目结构
-本项目由多个 Python 文件和多个 C++ 文件组成：
->TensorRT版本的相关文件配置好ONNX/TensorRT后使用，具体说明懒得写了
-
+本项目由多个 Python 文件和多个 C++ 文件组成：  
 ### run_pipeline.py
 一个自动化脚本，负责循环运行 self_play_worker.py 自对弈生成棋谱、运行 train_model.py 生成 torch 的model.pth模型  
 ### run_pipeline_trt.py
