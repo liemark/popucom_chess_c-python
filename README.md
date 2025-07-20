@@ -15,7 +15,8 @@
 **相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
 >U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
 
-**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**
+**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
+主要参考资料：
 ```
 https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
