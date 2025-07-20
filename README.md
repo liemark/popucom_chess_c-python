@@ -4,7 +4,7 @@
 和多数玩的熟练的人相近的版本
 链接: https://pan.baidu.com/s/18wJM3pfKcVaThANVlOH5IQ?pwd=2333
 提取码: 2333
-应该比绝大多数人类强的版本
+应该比绝大多数人类（其实是因为不知道最强的人类到底有多强，说的保守一点）强的版本
 链接: https://pan.baidu.com/s/1Ozo5PgIAcgul8AnTX0-ayg?pwd=2333
 提取码: 2333
 ```
