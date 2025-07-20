@@ -31,6 +31,8 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 https://github.com/liemark/popucom_chess
 ```
 旧项目运行速度较慢，虽然也达到了人类平均水平，但花了整整好多天才训练出来
+
+最后，比较可惜的是gui中单局对局（而非训练）的优化我是一点没做，所以gui中的搜索速度可以说是慢如蜗牛
 # 泡姆棋（叭啵棋） (Match-n-POP)
 >叭啵棋（Match-n-POP）是泡姆泡姆游戏内的官方名称，贴纸有提及。
 
