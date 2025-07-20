@@ -10,7 +10,6 @@
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
 ```
 本项目没有明确的elo曲线（根本不爱存旧权重和旧棋谱），但有使用对打测试以确认技术改进的有效性  
-本项目AI**远超任何人类**，目前的提升判断依赖于隔一段时间随缘储存一次的基准模型
 
 本项目使用了katago与alphazero等项目的一些优化技术  
 主要参考资料：
@@ -19,7 +18,7 @@ https://katagotraining.org/
 https://arxiv.org/pdf/1902.10565
 https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 ```
-以及针对泡姆棋的修改：  
+以及**针对泡姆棋的修改**：  
 **相对位置偏置的注意力模块（三消特性刚需长程信息传递）**  
 >U-net架构对价值输出拟合更佳，ResNet架构对策略输出拟合更佳，引入相对位置偏置的注意力模块后可减少ResNet堆叠数量（甚至可以直接取代ResNet块，但性价比不高），然而Swin-Unet和ConvNeXt架构并不适合泡姆棋
 
