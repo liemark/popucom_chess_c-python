@@ -55,7 +55,7 @@ class PopucomDataset(Dataset):
         return state, policy, value
 
 
-def load_data(data_dir, max_files=4):
+def load_data(data_dir, max_files=2): # 滑窗改为2，迭代的更快
     """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
