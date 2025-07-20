@@ -25,13 +25,13 @@ MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 # --- 训练周期配置 ---
 TOTAL_GAME_CYCLES = 7
 
-# --- MODIFIED: 分阶段搜索 (Phased Search) 配置 ---
+# --- 分阶段搜索 (Phased Search) 配置 ---
 # 注：泡姆泡姆棋残局刚需枚举(搜索深度)
 # 而大局观部分无需太多算力
 # 因此做出如下划分，而非单纯的Playout Cap Randomization
 OPENING_PHASE_MOVES = 36  # 前36步棋被定义为开局/中盘阶段
 OPENING_SIMS = 400  # 开局/中盘阶段的模拟次数
-ENDGAME_SIMS = 3000  # 残局阶段的模拟次数
+ENDGAME_SIMS = 3600  # 残局阶段的模拟次数
 
 # --- 走法选择温度配置 ---
 TEMPERATURE_START = 1.0
@@ -250,7 +250,7 @@ class GameBatchRunner:
 
 
 if __name__ == "__main__":
-    print("开始 TensorRT 自对弈工作脚本 (分阶段搜索版)...")
+    print("开始 TensorRT 自对弈工作脚本...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == 'cpu':
         print("错误: 此脚本需要 CUDA GPU 才能运行 TensorRT 引擎。", file=sys.stderr);
