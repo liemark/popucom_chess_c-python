@@ -81,7 +81,7 @@ https://github.com/liemark/popucom_chess
 >TensorRT版本的相关文件配置好ONNX/TensorRT后使用，具体说明懒得写了
 
 ### run_pipeline.py
-一个自动化脚本，负责循环运行 self_play_worker.py 自对弈生成棋谱以及运行 train_model.py 生成 torch 的model.pth模型  
+一个自动化脚本，负责循环运行 self_play_worker.py 自对弈生成棋谱、运行 train_model.py 生成 torch 的model.pth模型  
 ### run_pipeline_trt.py
 一个自动化脚本，负责循环运行 self_play_worker_trt.py 自对弈生成棋谱、运行 train_model.py 生成 torch 的model.pth模型、运行 build_tensorrt_engine.py 生成 TensorRT 模型（与run_pipeline选其中一个用即可）  
 ### self_play_worker.py
@@ -105,7 +105,7 @@ https://github.com/liemark/popucom_chess
 >暂时没做并行处理，懒得改了
 
 ### popucom_core.dll
-由C++代码编译获得，如果爆内存建议手动修改
+由C++代码（太多了懒得一个个说明了）编译获得，如果爆内存建议手动修改
 >置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE
 >每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY
 
