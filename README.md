@@ -105,7 +105,7 @@ https://github.com/liemark/popucom_chess
 >暂时没做并行处理，懒得改了
 
 ### popucom_core.dll
-由C++代码（太多了懒得一个个说明了）编译获得，如果爆内存建议手动修改
+由C++代码编译获得，如果爆内存建议手动修改
 >置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE
 >每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY
 
