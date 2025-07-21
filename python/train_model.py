@@ -55,7 +55,7 @@ class PopucomDataset(Dataset):
         return state, policy, value
 
 
-def load_data(data_dir, max_files=4): # 推荐滑窗大小约50w+局面，具体文件数的计算见self_play_worker的推荐值
+def load_data(data_dir, max_files=1): # 直接每次都仅使用最新生成的棋谱，加速迭代
     """从目录加载多个压缩的 .pkl.gz 数据文件"""
     all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
