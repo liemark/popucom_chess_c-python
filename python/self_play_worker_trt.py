@@ -29,9 +29,9 @@ TOTAL_GAME_CYCLES = 7
 # 注：泡姆泡姆棋残局刚需枚举(搜索深度)
 # 而大局观部分无需太多算力
 # 因此做出如下划分，而非单纯的Playout Cap Randomization
-OPENING_PHASE_MOVES = 36  # 前36步棋被定义为开局/中盘阶段
-OPENING_SIMS = 400  # 开局/中盘阶段的模拟次数
-ENDGAME_SIMS = 3600  # 残局阶段的模拟次数
+OPENING_PHASE_MOVES = 30  # 前36步棋被定义为开局/中盘阶段
+OPENING_SIMS = 300  # 开局/中盘阶段的模拟次数
+ENDGAME_SIMS = 1000  # 残局阶段的模拟次数
 
 # --- 走法选择温度配置 ---
 TEMPERATURE_START = 1.0
