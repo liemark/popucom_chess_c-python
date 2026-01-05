@@ -14,7 +14,7 @@ NUM_INPUT_CHANNELS = 11  # 仅内容通道数
 
 # 输入/输出文件名
 PYTORCH_MODEL_PATH = "model.pth"
-ONNX_MODEL_PATH = "model.onnx"
+ONNX_MODEL_PATH = "model_temp.onnx"
 TENSORRT_ENGINE_PATH = "model.plan"
 
 
@@ -26,19 +26,19 @@ def build_engine():
     print(f"TensorRT version: {trt.__version__}")
 
     # 1. 加载 PyTorch 模型
-    print(f"Loading PyTorch model from {PYTORCH_MODEL_PATH}...")
+    #print(f"Loading PyTorch model from {PYTORCH_MODEL_PATH}...")
     try:
         model = PomPomNN()
         model.load_state_dict(torch.load(PYTORCH_MODEL_PATH))
         # 确保模型在评估模式，这会关闭 dropout 等层
         model.cuda().eval()
-        print("PyTorch model loaded successfully.")
+        #print("PyTorch model loaded successfully.")
     except Exception as e:
         print(f"Error loading PyTorch model: {e}")
         sys.exit(1)
 
     # 2. 导出到 ONNX 格式
-    print(f"Exporting model to ONNX format at {ONNX_MODEL_PATH}...")
+    #print(f"Exporting model to ONNX format at {ONNX_MODEL_PATH}...")
     # 创建一个符合模型输入的虚拟输入张量
     # 注意：这里的输入通道数是内容通道，坐标通道是在模型内部生成的
     dummy_input = torch.randn(MAX_BATCH_SIZE, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE, device='cuda')
@@ -49,12 +49,12 @@ def build_engine():
             dummy_input,
             ONNX_MODEL_PATH,
             verbose=False,
-            opset_version=17,  # 推荐使用较新的 opset
+            opset_version=20,  # 推荐使用较新的 opset
             input_names=['input'],
             output_names=['policy_logits', 'value_output', 'soft_policy_logits'],
-            dynamic_axes=None  # 我们使用固定的最大批处理尺寸，因此没有动态轴
+            dynamic_axes=None  # 使用固定的最大批处理尺寸，因此没有动态轴
         )
-        print("Model exported to ONNX successfully.")
+        #print("Model exported to ONNX successfully.")
     except Exception as e:
         print(f"Error exporting to ONNX: {e}")
         print("This error often happens if your model contains operations not supported by ONNX.")
@@ -65,7 +65,7 @@ def build_engine():
     TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
     explicit_batch = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
 
-    print("Building TensorRT engine. This may take a few minutes...")
+    #print("Building TensorRT engine. This may take a few minutes...")
     with trt.Builder(TRT_LOGGER) as builder, \
             builder.create_network(explicit_batch) as network, \
             builder.create_builder_config() as config, \
@@ -75,10 +75,10 @@ def build_engine():
         config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB workspace
         if builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
-            print("FP16 mode enabled.")
+            #print("FP16 mode enabled.")
 
         # 解析 ONNX 文件
-        print(f"Parsing ONNX model {ONNX_MODEL_PATH}...")
+        #print(f"Parsing ONNX model {ONNX_MODEL_PATH}...")
         if not os.path.exists(ONNX_MODEL_PATH):
             print(f"ONNX file not found at {ONNX_MODEL_PATH}")
             sys.exit(1)
@@ -89,7 +89,7 @@ def build_engine():
                 for error in range(parser.num_errors):
                     print(parser.get_error(error))
                 sys.exit(1)
-        print("ONNX model parsed successfully.")
+        #print("ONNX model parsed successfully.")
 
         # --- FIXED ---
         # 设置网络输入尺寸。
@@ -98,12 +98,12 @@ def build_engine():
         network.get_input(0).shape = [MAX_BATCH_SIZE, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE]
 
         # 构建并序列化引擎
-        print("Building serialized engine...")
+        #print("Building serialized engine...")
         serialized_engine = builder.build_serialized_network(network, config)
         if serialized_engine is None:
             print("Failed to build the engine.")
             sys.exit(1)
-        print("Engine built successfully.")
+        #print("Engine built successfully.")
 
         # 保存到文件
         with open(TENSORRT_ENGINE_PATH, "wb") as f:

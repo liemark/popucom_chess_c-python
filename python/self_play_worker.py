@@ -6,13 +6,11 @@ import pickle
 import gzip
 import numpy as np
 import torch
-import random
 import threading
 import queue
-import sys
 
 from popucom_nn_model import PomPomNN
-from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE, MAX_MOVES_PER_PLAYER
+from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE
 
 # --- 全局配置 ---
 NUM_PARALLEL_GAMES = 512
@@ -26,9 +24,9 @@ BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 # 注：泡姆泡姆棋残局刚需枚举(搜索深度)
 # 而大局观部分无需太多算力
 # 因此做出如下划分，而非单纯的Playout Cap Randomization
-OPENING_PHASE_MOVES = 30  # 前36步棋被定义为开局/中盘阶段
-OPENING_SIMS = 300  # 开局/中盘阶段的模拟次数
-ENDGAME_SIMS = 1000  # 残局阶段的模拟次数
+OPENING_PHASE_MOVES = 30  # 前30步棋被定义为开局/中盘阶段
+OPENING_SIMS = 30  # 开局/中盘阶段的模拟次数
+ENDGAME_SIMS = 100  # 残局阶段的模拟次数
 
 # --- 温度参数 ---
 TEMPERATURE_DECAY_MOVES = 10

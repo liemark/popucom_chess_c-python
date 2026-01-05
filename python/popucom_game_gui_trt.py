@@ -102,7 +102,14 @@ class PomPomGUI:
         self.human_player, self.ai_player = BLACK_PLAYER, WHITE_PLAYER
         self.board_c, self._last_move_coords = Board(), None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.ai_model = self._load_ai_model()
+        try:
+            from self_play_worker_trt import TensorRTModel  # 假设你导入了它
+            # 确保 TensorRTModel 类被修改为支持 max_batch_size=1
+            self.ai_model = TensorRTModel("model.plan")
+            print(f"TensorRT 引擎 (model.plan) 已为GUI加载。")
+        except Exception as e:
+            messagebox.showerror("TensorRT 加载失败", f"无法加载 'model.plan': {e}")
+            exit()
         self.dirichlet_noise_enabled = BooleanVar(value=False)
         self.mcts_manager_gui = c_lib.create_mcts_manager(1, self.dirichlet_noise_enabled.get(), DEFAULT_FPU_GUI)
         self.ai_thread = None

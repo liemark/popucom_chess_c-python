@@ -6,12 +6,12 @@ import pickle
 import gzip
 import numpy as np
 import torch
-import random
 import sys
 import tensorrt as trt
+import random  # MODIFIED: 导入 random 模块
 
 # 导入接口常量
-from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE, MAX_MOVES_PER_PLAYER
+from popucom_nn_interface import NUM_INPUT_CHANNELS, BOARD_SIZE
 
 # --- 配置 ---
 TENSORRT_ENGINE_PATH = "model.plan"  # TensorRT引擎文件路径
@@ -19,19 +19,25 @@ DATA_DIR = "self_play_data"
 BOARD_SQUARES = BOARD_SIZE * BOARD_SIZE
 
 # --- 并行与批处理配置 ---
-NUM_PARALLEL_GAMES = 512
+NUM_PARALLEL_GAMES = 2048
 MAX_BATCH_SIZE = NUM_PARALLEL_GAMES
 
 # --- 训练周期配置 ---
 TOTAL_GAME_CYCLES = 7
 
-# --- 分阶段搜索 (Phased Search) 配置 ---
-# 注：泡姆泡姆棋残局刚需枚举(搜索深度)
-# 而大局观部分无需太多算力
-# 因此做出如下划分，而非单纯的Playout Cap Randomization
-OPENING_PHASE_MOVES = 30  # 前36步棋被定义为开局/中盘阶段
-OPENING_SIMS = 300  # 开局/中盘阶段的模拟次数
-ENDGAME_SIMS = 1000  # 残局阶段的模拟次数
+# --- Playout Cap Randomization (PCR) 配置 ---
+# MODIFIED: 采用新的PCR配置
+# 在每个落子前，AI会根据以下概率随机选择一个模拟次数。
+# 这有助于增加棋局的多样性，让模型见识到不同思考深度下的策略。
+PCR_OPTIONS = [
+    (200, 0.75),  # (模拟次数, 概率) -> 75% 的概率搜索 200 次
+    (1000, 0.25), # (模拟次数, 概率) -> 25% 的概率搜索 1000 次
+]
+
+# REMOVED: 移除了旧的分阶段搜索配置
+# OPENING_PHASE_MOVES = 30
+# OPENING_SIMS = 300
+# ENDGAME_SIMS = 1000
 
 # --- 走法选择温度配置 ---
 TEMPERATURE_START = 1.0
@@ -133,6 +139,14 @@ class GameBatchRunner:
         self.move_counters = [0] * NUM_PARALLEL_GAMES
         self.current_move_targets = {}
 
+        # MODIFIED: 在类初始化时预处理PCR选项以提高效率
+        self.pcr_sims = [opt[0] for opt in PCR_OPTIONS]
+        self.pcr_weights = [opt[1] for opt in PCR_OPTIONS]
+
+        # MODIFIED: 计算最大的搜索次数，用于后续过滤数据
+        self.max_pcr_sims = max(self.pcr_sims)
+        print(f"PCR配置已加载，仅保存搜索次数达到 {self.max_pcr_sims} 次的局面数据。")
+
     def run(self):
         while self.active_games:
             self._set_search_targets()
@@ -167,13 +181,13 @@ class GameBatchRunner:
                                 values[:num_requests].ctypes.data_as(ctypes.POINTER(ctypes.c_float)), board_buffer)
 
     def _set_search_targets(self):
-        """MODIFIED: 为所有活跃且没有目标的棋局设置分阶段的搜索次数"""
+        """MODIFIED: 为所有活跃且没有目标的棋局设置随机化的搜索次数"""
         for game_idx in self.active_games:
             if game_idx not in self.current_move_targets:
-                if self.move_counters[game_idx] < OPENING_PHASE_MOVES:
-                    self.current_move_targets[game_idx] = OPENING_SIMS
-                else:
-                    self.current_move_targets[game_idx] = ENDGAME_SIMS
+                # 使用 random.choices 根据权重随机选择一个模拟次数
+                chosen_sims = random.choices(self.pcr_sims, weights=self.pcr_weights, k=1)[0]
+                self.current_move_targets[game_idx] = chosen_sims
+
 
     def _get_mcts_requests(self):
         board_buffer = (Board * MAX_BATCH_SIZE)()
@@ -198,8 +212,14 @@ class GameBatchRunner:
         c_lib.mcts_get_policy(self.mcts_manager, game_idx, policy_buffer)
         policy_np = np.ctypeslib.as_array(policy_buffer).copy()
 
-        # 在分阶段搜索中，每一步都是有价值的，所以总是保存历史
-        self._save_history(game_idx, policy_np)
+        # MODIFIED: 数据过滤逻辑
+        # 获取当前这一步所设定的目标搜索次数
+        current_target = self.current_move_targets.get(game_idx, 0)
+
+        # 仅当当前步骤的搜索次数是"深搜"（即等于最大PCR次数，如1000次）时，才保存数据。
+        # 如果是200次的浅搜，数据将被丢弃，不用于训练，但游戏会继续进行。
+        if current_target >= self.max_pcr_sims:
+            self._save_history(game_idx, policy_np)
 
         move_count = self.move_counters[game_idx]
         temp = TEMPERATURE_START if move_count < TEMPERATURE_DECAY_MOVES else 0.0
@@ -219,8 +239,12 @@ class GameBatchRunner:
         if temperature == 0:
             return np.argmax(masked_policy)
         else:
-            move_probs = np.power(masked_policy, 1.0 / temperature)
-            move_probs /= np.sum(move_probs)
+            # 使用更安全的方式避免除零错误
+            masked_policy_pow = np.power(masked_policy, 1.0 / temperature)
+            sum_probs = np.sum(masked_policy_pow)
+            if sum_probs < 1e-8:
+                return np.random.choice(np.where(legal_moves_mask > 0.5)[0])
+            move_probs = masked_policy_pow / sum_probs
             return np.random.choice(range(BOARD_SQUARES), p=move_probs)
 
     def _get_legal_moves_mask(self, game_idx):
@@ -288,3 +312,4 @@ if __name__ == "__main__":
         print(f"\n所有数据已合并, 共 {len(all_cycles_data)} 条记录已保存至 {filename}")
     else:
         print("\n所有批次完成，但未生成任何训练数据。")
+

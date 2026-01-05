@@ -67,7 +67,7 @@ def setup_c_library():
 try:
     c_lib = setup_c_library()
 except FileNotFoundError as e:
-    messagebox.showerror("库加载错误", str(e));
+    messagebox.showerror("库加载错误", str(e))
     exit()
 
 # --- 全局常量 ---
@@ -121,61 +121,61 @@ class PomPomGUI:
             return None
 
     def _setup_gui(self):
-        top_frame = tk.Frame(self.master);
+        top_frame = tk.Frame(self.master)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(10, 0))
-        main_board_frame = tk.Frame(self.master);
+        main_board_frame = tk.Frame(self.master)
         main_board_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        control_frame = tk.Frame(top_frame);
+        control_frame = tk.Frame(top_frame)
         control_frame.pack(side=tk.TOP, fill=tk.X)
-        mode_frame = tk.LabelFrame(control_frame, text="游戏模式", padx=5, pady=5);
+        mode_frame = tk.LabelFrame(control_frame, text="游戏模式", padx=5, pady=5)
         mode_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         for text, value in [("人机对战", "human_vs_ai"), ("人人对战", "human_vs_human"), ("机机对战", "ai_vs_ai")]:
             tk.Radiobutton(mode_frame, text=text, variable=self.game_mode, value=value,
                            command=self._on_mode_change).pack(anchor='w')
-        self.role_frame = tk.LabelFrame(control_frame, text="执子选择", padx=5, pady=5);
+        self.role_frame = tk.LabelFrame(control_frame, text="执子选择", padx=5, pady=5)
         self.role_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         for text, value in [("我执红 (先手)", "human_black"), ("我执绿 (后手)", "ai_black")]:
             tk.Radiobutton(self.role_frame, text=text, variable=self.human_player_choice, value=value,
                            command=self._on_mode_change).pack(anchor='w')
-        ai_frame = tk.LabelFrame(control_frame, text="AI 设置", padx=5, pady=5);
+        ai_frame = tk.LabelFrame(control_frame, text="AI 设置", padx=5, pady=5)
         ai_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         tk.Label(ai_frame, text="搜索模拟次数:").grid(row=0, column=0, sticky='w')
-        self.ai_sims_slider = Scale(ai_frame, from_=50, to=10000, orient=tk.HORIZONTAL, resolution=50, length=200);
-        self.ai_sims_slider.set(1200);
+        self.ai_sims_slider = Scale(ai_frame, from_=50, to=10000, orient=tk.HORIZONTAL, resolution=50, length=200)
+        self.ai_sims_slider.set(1200)
         self.ai_sims_slider.grid(row=0, column=1, sticky='ew')
         tk.Label(ai_frame, text="落子温度:").grid(row=1, column=0, sticky='w')
-        self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200);
-        self.temperature_slider.set(0.0);
+        self.temperature_slider = Scale(ai_frame, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=200)
+        self.temperature_slider.set(0.0)
         self.temperature_slider.grid(row=1, column=1, sticky='ew')
         tk.Label(ai_frame, text="节点初始分数:").grid(row=2, column=0, sticky='w')
         self.fpu_slider = Scale(ai_frame, from_=-0.5, to=0.5, orient=tk.HORIZONTAL, resolution=0.01, length=100,
-                                command=self._on_fpu_change);
-        self.fpu_slider.set(DEFAULT_FPU_GUI);
+                                command=self._on_fpu_change)
+        self.fpu_slider.set(DEFAULT_FPU_GUI)
         self.fpu_slider.grid(row=2, column=1, sticky='ew')
         self.noise_checkbox = Checkbutton(ai_frame, text="开启狄利克雷噪声", variable=self.dirichlet_noise_enabled,
-                                          command=self._on_noise_toggle);
+                                          command=self._on_noise_toggle)
         self.noise_checkbox.grid(row=3, column=0, columnspan=2, sticky='w', pady=(5, 0))
         ai_frame.columnconfigure(1, weight=1)
-        btn_frame = tk.Frame(control_frame);
+        btn_frame = tk.Frame(control_frame)
         btn_frame.pack(side=tk.RIGHT, padx=5, fill=tk.Y)
         self.new_game_button = tk.Button(btn_frame, text="新对局/清空", command=self._reset_and_start_new_game,
-                                         width=10);
+                                         width=10)
         self.new_game_button.pack(pady=2)
-        self.undo_button = tk.Button(btn_frame, text="返回上步", command=self._undo_move, width=10);
+        self.undo_button = tk.Button(btn_frame, text="返回上步", command=self._undo_move, width=10)
         self.undo_button.pack(pady=2)
-        self.analyze_button = tk.Button(btn_frame, text="分析", command=self._toggle_analysis, width=10);
+        self.analyze_button = tk.Button(btn_frame, text="分析", command=self._toggle_analysis, width=10)
         self.analyze_button.pack(pady=2)
-        status_frame = tk.Frame(top_frame, pady=5);
+        status_frame = tk.Frame(top_frame, pady=5)
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
-        self.status_label = tk.Label(status_frame, text="初始化...", font=("Arial", 14, "bold"));
+        self.status_label = tk.Label(status_frame, text="初始化...", font=("Arial", 14, "bold"))
         self.status_label.pack()
-        self.moves_label = tk.Label(status_frame, text="", font=("Arial", 11));
+        self.moves_label = tk.Label(status_frame, text="", font=("Arial", 11))
         self.moves_label.pack()
-        canvas_frame = tk.Frame(main_board_frame);
+        canvas_frame = tk.Frame(main_board_frame)
         canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(canvas_frame, bg=BOARD_BACKGROUND_COLOR);
+        self.canvas = tk.Canvas(canvas_frame, bg=BOARD_BACKGROUND_COLOR)
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.canvas.bind("<Button-1>", self._handle_click);
+        self.canvas.bind("<Button-1>", self._handle_click)
         canvas_frame.bind("<Configure>", self._on_resize)
         self._setup_listbox_view(main_board_frame)
         self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -184,16 +184,16 @@ class PomPomGUI:
         listbox_container = tk.Frame(parent_frame, bd=1, relief=tk.SUNKEN)
         listbox_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
         tk.Label(listbox_container, text="对局树", font=("Arial", 12, "bold")).pack(pady=(5, 0))
-        list_frame = tk.Frame(listbox_container);
+        list_frame = tk.Frame(listbox_container)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        list_frame.grid_rowconfigure(0, weight=1);
+        list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
         self.game_view = tk.Listbox(list_frame, font=("Courier", 10), selectmode=tk.SINGLE)
         ysb = ttk.Scrollbar(list_frame, orient='vertical', command=self.game_view.yview)
         xsb = ttk.Scrollbar(list_frame, orient='horizontal', command=self.game_view.xview)
         self.game_view.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
-        self.game_view.grid(row=0, column=0, sticky='nsew');
-        ysb.grid(row=0, column=1, sticky='ns');
+        self.game_view.grid(row=0, column=0, sticky='nsew')
+        ysb.grid(row=0, column=1, sticky='ns')
         xsb.grid(row=1, column=0, sticky='ew')
         self.game_view.bind("<<ListboxSelect>>", self._on_listbox_select)
 
@@ -290,7 +290,7 @@ class PomPomGUI:
         self._toggle_ui_elements(True)
         game_result = c_lib.get_game_result(ctypes.byref(self.board_c))
         if game_result != IN_PROGRESS:
-            self._handle_game_over(game_result);
+            self._handle_game_over(game_result)
             return
         mode = self.game_mode.get()
         player = self.board_c.current_player
@@ -443,7 +443,7 @@ class PomPomGUI:
     def _toggle_analysis(self):
         if self.analysis_data:
             self.analysis_data, self.best_puct_move, self.best_visit_move = {}, None, None
-            self.draw_board();
+            self.draw_board()
             return
         if not self.game_running or (self.ai_thread and self.ai_thread.is_alive()): return
         self._toggle_ui_elements(False)
@@ -480,7 +480,7 @@ class PomPomGUI:
         sims = self.ai_sims_slider.get()
         self._run_mcts_loop(sims)
         if not self.game_running: return
-        policy_buffer = (ctypes.c_float * 81)();
+        policy_buffer = (ctypes.c_float * 81)()
         c_lib.mcts_get_policy(self.mcts_manager_gui, 0, policy_buffer)
         policy_np = np.ctypeslib.as_array(policy_buffer)
         temp = self.temperature_slider.get()
