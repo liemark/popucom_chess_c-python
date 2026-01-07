@@ -111,7 +111,7 @@ class PopucomDataset(Dataset):
         return state, policy, value
 
 
-def load_data(data_dir, max_files=5):
+def load_data(data_dir, max_files=3):
     all_data = []
     file_paths = sorted(glob.glob(os.path.join(glob.escape(data_dir), "*.pkl.gz")), key=os.path.getmtime, reverse=True)
     for file_path in file_paths[:max_files]:
@@ -128,9 +128,9 @@ def get_args():
     parser = argparse.ArgumentParser(description="训练 PomPomNN (Muon 版)")
     parser.add_argument('--data-dir', type=str, default='self_play_data')
     parser.add_argument('--model-path', type=str, default='model.pth')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=3)
     parser.add_argument('--batch-size', type=int, default=1024)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--policy-weight', type=float, default=1.0)
     parser.add_argument('--value-weight', type=float, default=1.0)
