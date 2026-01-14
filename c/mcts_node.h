@@ -54,7 +54,8 @@ struct Node {
      * @param fpu_value First Play Urgency，用于未访问节点的Q值。
      * @return 该节点的PUCT分数。
      */
-    double get_puct_value(int total_parent_visits, double fpu_value) const;
+     // 修改：将传入固定的 fpu_value 改为传入父节点的平均 Q 值
+    double get_puct_value(int total_parent_visits, double parent_q) const;
 };
 
 #endif // MCTS_NODE_H

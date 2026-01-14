@@ -136,13 +136,23 @@ void MCTSSearch::backpropagate(size_t leaf_idx, float value) {
 }
 
 size_t MCTSSearch::get_best_child_offset(size_t parent_idx) {
-    double max_puct = -1e9;
+    double max_puct = -1e18;
     size_t best_child_offset = INVALID_INDEX;
     const Node& parent_node = node_store[parent_idx];
 
+    // 1. 获取父节点在该玩家视角的当前平均价值 (Q)
+    double p_q = 0.0;
+    if (parent_node.visit_count > 0) {
+        // parent_node 的 total_action_value 是在该节点累加的
+        p_q = parent_node.total_action_value / parent_node.visit_count;
+    }
+
     for (int i = 0; i < parent_node.num_children; ++i) {
         const Node& child = node_store[parent_node.children_start_idx + i];
-        double puct_val = child.get_puct_value(parent_node.visit_count, this->fpu_value);
+
+        // 2. 将计算好的父节点 Q 传给子节点
+        double puct_val = child.get_puct_value(parent_node.visit_count, p_q);
+
         if (puct_val > max_puct) {
             max_puct = puct_val;
             best_child_offset = i;
