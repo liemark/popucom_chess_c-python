@@ -224,8 +224,9 @@ class PomPomGUI:
         self.listbox_nodes.clear()
 
         def build_list(node, depth=0):
-            prefix = " " * (depth * 2)
-            move_text = f"{prefix}{self._get_move_text(node)}"
+            # prefix = " " * depth
+            # move_text = f"{prefix}{self._get_move_text(node)}"
+            move_text = f"{self._get_move_text(node)}"
             self.game_view.insert(tk.END, move_text)
             self.listbox_nodes.append(node)
             for move_sq in sorted(node.children.keys()):

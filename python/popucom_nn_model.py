@@ -6,23 +6,29 @@ import math
 # 棋盘基础配置
 NUM_INPUT_CHANNELS = 11
 BOARD_SIZE = 9
-# 针对 9x9 优化的位置编码基数：8 / (pi/2) ≈ 5.093
-THETA_BASE = 5.093
-
+# 位置编码基数：8 / (pi/2) ≈ 5.093
+# 取 10 效果较好
+THETA_BASE = 10
 
 @torch.jit.script
 def fast_sinkhorn_v1(W: torch.Tensor):
     """
-    极致性能的单次 Sinkhorn 变换。
-    用于流形约束，为 MCTS 提供稳定的先验分布。
+    改进的对称归一化 Sinkhorn 变换。
+    采用几何平均归一化 (Symmetric Normalization)，一次性解决行列不对称问题。
+    相比先后归一化，这种方式在单次迭代下具有更好的数值稳定性和对称性。
     """
-    # 减去最大值防止溢出
-    W = torch.exp(W - W.max(dim=-1, keepdim=True)[0])
-    # 两次简单的行列归一化即可达到较好的投影效果
-    W = W / (W.sum(dim=-1, keepdim=True) + 1e-6)
-    W = W / (W.sum(dim=-2, keepdim=True) + 1e-6)
-    return W
+    # 指数映射并防止溢出
+    A = torch.exp(W - W.max(dim=-1, keepdim=True)[0])
 
+    # 计算行和与列和
+    r = A.sum(dim=-1, keepdim=True)  # (..., N, 1)
+    c = A.sum(dim=-2, keepdim=True)  # (..., 1, N)
+
+    # 对称投影：W = A / sqrt(r * c)
+    # 这种方式等效于 A 在行和列方向的几何平均投影，一次计算即可获得近似双稳态矩阵
+    W_out = A / (torch.sqrt(r * c) + 1e-6)
+
+    return W_out
 
 class PoPEPositionalManager(nn.Module):
     """
@@ -56,7 +62,7 @@ class ValueAttentionPooling(nn.Module):
     PoPE 全局价值池化：利用可学习的 Query 和位置解耦的相位聚合棋盘特征。
     """
 
-    def __init__(self, dim, num_heads=8, board_size=BOARD_SIZE):
+    def __init__(self, dim, num_heads, board_size=BOARD_SIZE):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -175,7 +181,7 @@ class mHCTurboBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
             nn.Linear(dim, 4 * dim),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Linear(4 * dim, dim)
         )
 

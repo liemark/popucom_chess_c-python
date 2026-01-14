@@ -235,9 +235,9 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="运行两个泡姆棋模型进行对练。")
     parser.add_argument("--model_a_path", type=str, default="model.onnx", help="模型A的路径 (.onnx)")
-    parser.add_argument("--model_b_path", type=str, default="onnx_arena/model_6+0.5_1001_0000.onnx", help="模型B的路径 (.onnx)")
-    parser.add_argument("--num_games", type=int, default=500, help="总对局数 (必须是偶数)")
-    parser.add_argument("--simulations", type=int, default=5, help="每一步的MCTS模拟次数")
+    parser.add_argument("--model_b_path", type=str, default="onnx_arena/model_11.onnx", help="模型B的路径 (.onnx)")
+    parser.add_argument("--num_games", type=int, default=200, help="总对局数 (必须是偶数)")
+    parser.add_argument("--simulations", type=int, default=20, help="每一步的MCTS模拟次数")
     parser.add_argument("--opening_moves", type=int, default=6, help="模型驱动的随机开局步数。设为0则为纯确定性对弈。")
 
     args = parser.parse_args()
