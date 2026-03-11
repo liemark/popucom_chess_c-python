@@ -1,5 +1,7 @@
 本项目**针对泡姆棋的修改**：  
 **注意力模块（三消特性）**  
+>本项目特色应该是于2507左右尝试抛弃所有卷积层，全部用注意力层代替
+>粗略测试大约1/3的参数量可以达到残差块的效果
 >260106看到PoPE和mHC的论文，一时兴起直接改了进去，发现效果极佳，于是直接覆盖旧版本，顺便使用Muon优化器，ai帮忙改的真快  
 >260108权重确实强了一些但也没啥质变
 ```
@@ -9,8 +11,11 @@ https://arxiv.org/abs/2502.16982
 ```
 
 **分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
-本项目没有明确的elo曲线（根本不爱存旧权重和旧棋谱），但有使用对打测试以确认技术改进的有效性  
->本项目于20250721暂停更新，由于泡姆棋残局刚需大量搜索的特性，将来计划使用NNUE重写项目
+本项目没有明确的elo曲线，有使用与历史权重和友情项目（Shenyqqq）的权重的对打测试和loss对比以确认技术改进的有效性  
+>tips:
+>实际上只需要对比在一定量的棋谱下，什么架构能用最小的参数量达到饱和拟合效果即可
+>在一定量的棋谱下，loss是存在下限的（即棋谱质量的上限）
+>用上述方法对比的架构，在同参数量下，基本都是对打测试更强的架构
 
 同时也主要使用了katago与alphazero等项目的优化技术  
 主要参考资料：
@@ -26,8 +31,9 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 和多数玩的熟练的人相近的版本
 链接: https://pan.baidu.com/s/18wJM3pfKcVaThANVlOH5IQ?pwd=2333
 提取码: 2333
-应该比绝大多数人类（其实是因为不知道最强的人类到底有多强，说的保守一点）强的版本
-链接: https://pan.baidu.com/s/1Ozo5PgIAcgul8AnTX0-ayg?pwd=2333
+同参数量同计算量下最强版本（已经基本确定了该棋是先手必败的了）
+(2.8 MB 200计算量胜2000计算量的Shenyqqq的友情项目https://huggingface.co/spaces/gumigumi/pmpmchess)
+链接: https://pan.baidu.com/s/1CH9hwMLtLjuNl-3SizwOTQ?pwd=2333
 提取码: 2333
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
 ```
