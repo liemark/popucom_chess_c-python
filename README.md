@@ -32,7 +32,7 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 提取码: 2333
 同参数量同计算量下最强版本（已经基本确定了该棋是先手必败的了）
 (2.8 MB 200计算量先手（劣势方）胜2000计算量的Shenyqqq的友情项目https://huggingface.co/spaces/gumigumi/pmpmchess)
-链接: https://pan.baidu.com/s/1CH9hwMLtLjuNl-3SizwOTQ?pwd=2333
+链接: https://pan.baidu.com/s/1P8im2ORrD8uMXnKnRkBp4w?pwd=2333
 提取码: 2333
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
 ```
