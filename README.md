@@ -10,7 +10,6 @@ https://arxiv.org/abs/2509.10534v2
 https://arxiv.org/abs/2502.16982
 ```
 
-**分阶段搜索（类似于Playout Cap Randomization针对泡姆棋的改进）**  
 本项目没有明确的elo曲线，有使用与历史权重和友情项目（Shenyqqq）的权重的对打测试和loss对比以确认技术改进的有效性  
 >tips:  
 >实际上只需要对比在一定量的棋谱下，什么架构能用最小的参数量达到饱和拟合效果即可  
