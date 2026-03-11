@@ -31,7 +31,7 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 链接: https://pan.baidu.com/s/18wJM3pfKcVaThANVlOH5IQ?pwd=2333
 提取码: 2333
 同参数量同计算量下最强版本（已经基本确定了该棋是先手必败的了，ai目前爱走中心或33开局，还是很符合人类直觉的）
-(2.8 MB 200计算量先手（劣势方）胜2000计算量的Shenyqqq的友情项目https://huggingface.co/spaces/gumigumi/pmpmchess)
+(2.8 MB 100计算量先手（劣势方）胜2000计算量的Shenyqqq的友情项目https://huggingface.co/spaces/gumigumi/pmpmchess并还有余力)
 链接: https://pan.baidu.com/s/1P8im2ORrD8uMXnKnRkBp4w?pwd=2333
 提取码: 2333
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
