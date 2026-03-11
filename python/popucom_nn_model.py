@@ -6,6 +6,7 @@ NUM_INPUT_CHANNELS = 11
 BOARD_SIZE = 9
 THETA_BASE = 10
 
+
 class RMSNorm(nn.Module):
     """
     改用 RMSNorm。
@@ -54,6 +55,7 @@ class PoPE2DAttention(nn.Module):
     Softplus 只是为了防止负数产生的 π 相位
     不如直接改用 TRT 高度优化的 ReLU
     """
+
     def __init__(self, dim, num_heads, board_size):
         super().__init__()
         self.dim = dim
@@ -93,7 +95,8 @@ class mHCTurboBlock(nn.Module):
         super().__init__()
         self.n = n_streams
         self.mhc_proj = nn.Linear(dim, n_streams * 2 + n_streams * n_streams)
-        self.alpha = nn.Parameter(torch.full((3,), 0.01))
+        # 增大 alpha(0.01 → 1.0)
+        self.alpha = nn.Parameter(torch.full((3,), 1.0))
         self.layer_scale = nn.Parameter(torch.full((dim,), 1e-5))
 
         self.norm1 = RMSNorm(dim)
@@ -156,13 +159,18 @@ class PomPomNN(nn.Module):
             nn.Linear(num_filters, 1)
         )
 
+        # 预计算坐标并注册为 buffer
+        coords = torch.linspace(-1, 1, BOARD_SIZE)
+        y_c, x_c = torch.meshgrid(coords, coords, indexing='ij')
+        # (2, 9, 9)
+        c_feat = torch.stack([x_c, y_c], dim=0)
+        self.register_buffer("static_coords", c_feat)
+
     def forward(self, x):
         b, c, h, w = x.shape
 
         # 1. 注入坐标x,y (CoordConv)
-        coords = torch.linspace(-1, 1, BOARD_SIZE, device=x.device)
-        y_c, x_c = torch.meshgrid(coords, coords, indexing='ij')
-        c_feat = torch.stack([x_c, y_c], dim=0).unsqueeze(0).repeat(b, 1, 1, 1)
+        c_feat = self.static_coords.unsqueeze(0).expand(b, -1, -1, -1)
         x = torch.cat([x, c_feat], dim=1)
 
         # 2. MLP (B, 81, 13) -> (B, 81, 128)
