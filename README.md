@@ -101,7 +101,7 @@ https://github.com/liemark/popucom_chess
 ### build_tensorrt_engine.py
 用 model.pth 生成临时的ONNX模型 model_temp.onnx 然后再生成 TensorRT 模型 model.plan  
 ### popucom_nn_interface.py 和 popucom_nn_model.py
-定义泡姆棋的神经网络模型架构（基于残差块），包含策略头和价值头（通过在残差块中插入全局注意力模块进行了长程关系的改进，同时在注意力分数引入了相对坐标偏置以感知相对坐标）  
+定义泡姆棋的神经网络模型架构，包含策略头和价值头
 ### popucom_chess_gui.py
 游玩的ui界面，目前提供**人人/人机/机机**对弈功能，并加入了**对局树**~~虽然比较丑~~便于复盘分析，若使用onnx版本，运行速度会快不少，在运行onnx版本前，可以先运行**convert_to_onnx.py**以获得最新权重的onnx模型  
 ### popucom_chess_gui_onnx.py
