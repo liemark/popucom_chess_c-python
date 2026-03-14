@@ -37,7 +37,7 @@ https://github.com/lightvector/KataGo/blob/master/docs/KataGoMethods.md
 也可以直接去weights文件夹下载最新的ONNX模型替换使用
 ```
 如需根据计算资源修改参数，建议查看 self_play_worker.py 与 train_model.py 以及 C++ 代码  
-六月初纯python写的旧项目连接：
+2025年六月初纯python写的旧项目连接：
 ```
 https://github.com/liemark/popucom_chess
 ```
