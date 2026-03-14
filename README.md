@@ -114,7 +114,7 @@ https://github.com/liemark/popucom_chess
 
 ### popucom_core.dll
 由C++代码编译获得，负责 MCTS，如果爆内存建议手动修改
->置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE
+>置换表最大尺寸:puct.cpp中的DEFAULT_TT_MAX_SIZE  
 >每次储存的节点数：mcts_search.cpp中的INITIAL_NODE_STORE_CAPACITY
 
 ## 如何运行
