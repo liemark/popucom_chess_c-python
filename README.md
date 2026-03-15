@@ -1,3 +1,4 @@
+项目附带一个简易UI用于游玩，含简单的对局树用于复盘
 ![alt text](https://github.com/liemark/popucom_chess_c-python/blob/main/readme.png)
 本项目**针对泡姆棋（叭啵棋）的修改**：  
 **注意力模块（三消特性）**  
