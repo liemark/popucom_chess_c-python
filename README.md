@@ -1,3 +1,4 @@
+![alt text](https://github.com/liemark/popucom_chess_c-python/blob/main/readme.png)
 本项目**针对泡姆棋（叭啵棋）的修改**：  
 **注意力模块（三消特性）**  
 >本项目特色应该是于25年7月左右尝试**抛弃所有卷积层**，全部用注意力层代替  
