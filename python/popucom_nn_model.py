@@ -1,10 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
+# 配置常量
 NUM_INPUT_CHANNELS = 11
 BOARD_SIZE = 9
-THETA_BASE = 10
+# 按波长配置 (可学习坐标嵌入容易陷入局部最优)
+MIN_WAVELENGTH = 2.0
+# 1/4 波长大于 9
+MAX_WAVELENGTH = 64.0
 
 
 class RMSNorm(nn.Module):
@@ -30,23 +35,50 @@ class PoPEPositionalManager(nn.Module):
     解耦 What (Content) 和 Where (Position)
     对于明确已知边界的任务，不需要原论文中的可变参数 delta
     方便预计算缓存位置嵌入相位
+    指定最大/最小波长，并保持对数分布
     """
 
-    def __init__(self, dim, board_size, theta_base=THETA_BASE):
+    def __init__(self, dim, board_size, min_wl=MIN_WAVELENGTH, max_wl=MAX_WAVELENGTH):
         super().__init__()
+        # dim 是 head_dim
         half_hd = dim // 2
-        inv_freq = 1.0 / (theta_base ** (torch.arange(0, half_hd).float() / (half_hd - 1 if half_hd > 1 else 1)))
+
+        # 频率计算：
+        # 波长 lambda = 2 * pi / freq
+        # 令 lambda 在 [min_wl, max_wl] 之间成对数分布
+        # log(lambda) = log(min_wl) + i * (log(max_wl) - log(min_wl)) / (half_hd - 1)
+        # freq = 2 * pi / exp(log_lambda)
+
+        if half_hd > 1:
+            log_min_wl = math.log(min_wl)
+            log_max_wl = math.log(max_wl)
+            # 生成对数间隔的波长
+            weights = torch.linspace(0, 1, steps=half_hd)
+            log_wavelengths = log_min_wl + weights * (log_max_wl - log_min_wl)
+            wavelengths = torch.exp(log_wavelengths)
+            inv_freq = (2.0 * math.pi) / wavelengths
+        else:
+            inv_freq = torch.tensor([(2.0 * math.pi) / min_wl])
+
+        # 缓存坐标网格 (N, N) -> (N*N, 1)
         coords = torch.arange(board_size).float()
+        # indexing='ij' 保持 (y, x) 对应关系
         y_c, x_c = torch.meshgrid(coords, coords, indexing='ij')
 
+        # 计算相位 phi = position * frequency
+        # x 轴和 y 轴各占一半通道
         phi_x = x_c.reshape(-1, 1) * inv_freq.unsqueeze(0)
         phi_y = y_c.reshape(-1, 1) * inv_freq.unsqueeze(0)
-        phi = torch.cat([phi_x, phi_y], dim=-1)  # (81, HD)
+        phi = torch.cat([phi_x, phi_y], dim=-1)  # (BoardSize^2, head_dim)
 
-        self.register_buffer("cos_phi", torch.cos(phi))
-        self.register_buffer("sin_phi", torch.sin(phi))
+        # 预计算并缓存 cos 和 sin
+        self.register_buffer("cos_phi", torch.cos(phi))  # (81, HD)
+        self.register_buffer("sin_phi", torch.sin(phi))  # (81, HD)
 
     def get_sincos(self):
+        """
+        直接返回预计算好的张量，避免 forward 过程中任何重复计算
+        """
         return self.cos_phi, self.sin_phi
 
 
@@ -85,47 +117,63 @@ class PoPE2DAttention(nn.Module):
         return self.out_proj(out.transpose(1, 2).reshape(b, n, d))
 
 
-class mHCTurboBlock(nn.Module):
+class AttnResBlock(nn.Module):
     """
-    Multi-Head Collaborative (mHC) Block。
-    直接用 softmax 近似 Sinkhorn
+    集成 Attention Residuals (AttnRes) 理念的改进块。
+    核心逻辑：将固定权重的残差累加替换为基于输入的动态 Softmax 聚合，
+    解决深层网络中的贡献稀释（Dilution）问题。
     """
 
-    def __init__(self, dim, num_heads, board_size, n_streams=4):
+    def __init__(self, dim, num_heads, board_size, n_streams, layer_idx):
         super().__init__()
-        self.n = n_streams
-        self.mhc_proj = nn.Linear(dim, n_streams * 2 + n_streams * n_streams)
-        # 增大 alpha(0.01 → 1.0)
-        self.alpha = nn.Parameter(torch.full((3,), 1.0))
-        self.layer_scale = nn.Parameter(torch.full((dim,), 1e-5))
+        self.layer_idx = layer_idx
+        self.n_streams = n_streams
 
+        # 核心特征变换路径
         self.norm1 = RMSNorm(dim)
         self.attn = PoPE2DAttention(dim, num_heads, board_size)
         self.norm2 = RMSNorm(dim)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, 4 * dim),
+            nn.Linear(dim, 3 * dim),
             nn.ReLU(inplace=True),
-            nn.Linear(4 * dim, dim)
+            nn.Linear(3 * dim, dim)
         )
 
+        # 多流转换系数 (近似 Sinkhorn / Attention Residuals 中的跨层权重)
+        # 允许每一层根据当前输入 Content 动态决定从哪些流读取/写入信息
+        self.mhc_mixer = nn.Linear(dim, n_streams * n_streams)
+
+        # LayerScale: 用于稳定极深网络的训练
+        self.gamma = nn.Parameter(torch.full((dim,), 1e-5))
+
     def forward(self, x_stream):
+        """
+        x_stream: (B, L, N, D) -> Batch, SeqLen, NumStreams, Dim
+        """
         B, L, N, D = x_stream.shape
-        x_avg = x_stream.mean(dim=2)
 
-        coeffs = self.mhc_proj(x_avg)
-        h_pre = torch.sigmoid(coeffs[:, :, :N] * self.alpha[0]).unsqueeze(-1)
-        h_post = (torch.sigmoid(coeffs[:, :, N:2 * N] * self.alpha[1]) * 2.0).unsqueeze(-1)
+        # 1. 跨流聚合 (Cross-stream Aggregation)
+        # 将多个流的信息汇聚，作为当前层处理的 Query 背景
+        combined_input = x_stream.mean(dim=2)
 
-        h_res_raw = coeffs[:, :, 2 * N:].view(B, L, N, N) * self.alpha[2]
-        h_res = F.softmax(h_res_raw, dim=-1)
+        # 2. 变换层计算
+        attn_out = self.attn(self.norm1(combined_input))
+        ffn_out = self.mlp(self.norm2(combined_input + attn_out))
+        # 增量信息 (New Content)
+        delta = (attn_out + ffn_out) * self.gamma
 
-        layer_input = (x_stream * h_pre).sum(dim=2)
+        # 3. 动态残差连接 (AttnRes 核心逻辑)
+        # 计算输入相关的混合权重矩阵，实现非等权的层间/流间信息整合
+        mixer_logits = self.mhc_mixer(combined_input).view(B, L, N, N)
+        mixer_weights = F.softmax(mixer_logits, dim=-1)
 
-        res = self.attn(self.norm1(layer_input))
-        res = res + self.mlp(self.norm2(layer_input + res))
+        x_stream_reshaped = x_stream.view(-1, N, D)
+        # 线性变换流状态：x_next = Softmax(W) * x_prev
+        x_stream_next = torch.bmm(mixer_weights.view(-1, N, N), x_stream_reshaped)
+        x_stream_next = x_stream_next.view(B, L, N, D)
 
-        x_stream_next = torch.bmm(h_res.reshape(-1, N, N), x_stream.reshape(-1, N, D)).reshape(B, L, N, D)
-        return x_stream_next + (res.unsqueeze(2) * (h_post * self.layer_scale))
+        # 将新特征 delta 以残差形式注入所有流
+        return x_stream_next + delta.unsqueeze(2)
 
 
 class PomPomNN(nn.Module):
@@ -135,19 +183,22 @@ class PomPomNN(nn.Module):
     任何其他经典的处理方法都只会影响收敛速度
     """
 
-    def __init__(self, num_layers=8, num_filters=128, num_heads=4, n_streams=2):
+    def __init__(self, num_layers=6, num_filters=192, num_heads=4, n_streams=2):
         super().__init__()
         self.n_streams = n_streams
+        self.num_layers = num_layers
 
+        # 输入投影：第一层投影功能明确，不使用残差
         self.input_projection = nn.Sequential(
             nn.Linear(NUM_INPUT_CHANNELS + 2, num_filters),
             nn.ReLU(inplace=True),
             nn.Linear(num_filters, num_filters)
         )
 
+        # 使用集成了 AttnRes 理念的 Block
         self.blocks = nn.ModuleList([
-            mHCTurboBlock(num_filters, num_heads, BOARD_SIZE, n_streams)
-            for _ in range(num_layers)
+            AttnResBlock(num_filters, num_heads, BOARD_SIZE, n_streams, i)
+            for i in range(num_layers)
         ])
 
         self.final_norm = RMSNorm(num_filters)
@@ -162,7 +213,6 @@ class PomPomNN(nn.Module):
         # 预计算坐标并注册为 buffer
         coords = torch.linspace(-1, 1, BOARD_SIZE)
         y_c, x_c = torch.meshgrid(coords, coords, indexing='ij')
-        # (2, 9, 9)
         c_feat = torch.stack([x_c, y_c], dim=0)
         self.register_buffer("static_coords", c_feat)
 
@@ -173,13 +223,14 @@ class PomPomNN(nn.Module):
         c_feat = self.static_coords.unsqueeze(0).expand(b, -1, -1, -1)
         x = torch.cat([x, c_feat], dim=1)
 
-        # 2. MLP (B, 81, 13) -> (B, 81, 128)
+        # 2. 初始 MLP 投影 (B, 81, Channels) -> (B, 81, Filters)
         x = x.view(b, x.size(1), -1).transpose(1, 2)
-        # 这里不要用残差连接，第一层的投影功能本来就很明确
         x = self.input_projection(x)
 
-        # 3. mHC
+        # 3. 初始化多流 (Multi-stream)
+        # 通过多流维护隐状态，配合 AttnRes 动态权重实现更深度的特征传递
         x_stream = x.unsqueeze(2).repeat(1, 1, self.n_streams, 1)
+
         for block in self.blocks:
             x_stream = block(x_stream)
 
@@ -192,7 +243,6 @@ class PomPomNN(nn.Module):
         soft_pol = p_out[..., 1]
 
         # 6. 价值输出
-        # 直接平均池化即可，注意力层会均衡好策略头与价值头的信息的
         v_aggregated = x_tokens.mean(dim=1)
         val = torch.tanh(self.value_head(v_aggregated))
 
@@ -200,9 +250,9 @@ class PomPomNN(nn.Module):
 
 
 if __name__ == "__main__":
-    model = PomPomNN(num_layers=8, num_filters=128, num_heads=4, n_streams=2)
+    model = PomPomNN(num_layers=6, num_filters=192, num_heads=4, n_streams=2)
     model.eval()
-    dummy_input = torch.randn(1, 11, 9, 9)
+    dummy_input = torch.randn(1, NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     with torch.no_grad():
         p, v, sp = model(dummy_input)
     print("--- 模型初始化成功 ---")
