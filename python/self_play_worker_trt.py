@@ -28,7 +28,7 @@ TOTAL_GAME_CYCLES = 7
 # --- Playout Cap Randomization (PCR) 配置 ---
 # MODIFIED: 采用新的PCR配置
 # 在每个落子前，AI会根据以下概率随机选择一个模拟次数。
-# Tranformer 模型对 policy 的拟合很强，更需要高质量的 value 反馈
+# Transformer 模型对 policy 的拟合很强，更需要高质量的 value 反馈
 PCR_OPTIONS = [
     #(400, 0.75),  # (模拟次数, 概率) -> 75% 的概率搜索 200 次
     (1200, 1.0), # (模拟次数, 概率) -> 25% 的概率搜索 1000 次
