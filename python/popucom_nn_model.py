@@ -195,7 +195,7 @@ class PomPomNN(nn.Module):
             nn.Linear(num_filters, num_filters)
         )
 
-        # 使用集成了 AttnRes 理念的 Block
+        # AttnRes
         self.blocks = nn.ModuleList([
             AttnResBlock(num_filters, num_heads, BOARD_SIZE, n_streams, i)
             for i in range(num_layers)
