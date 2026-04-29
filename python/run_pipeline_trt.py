@@ -42,12 +42,22 @@ def ensure_initial_engine_exists():
 
     print(f"未检测到 TensorRT 引擎。开始首次构建流程...")
 
-    # 1. 检查PyTorch模型是否存在，如果不存在，则需要先运行训练脚本来创建一个初始模型
+    # 1. 检查PyTorch模型是否存在，如果不存在，则创建一个随机初始化的模型
+    # 不调用训练脚本(因为缺少数据会报错)，直接实例化随机网络并保存
     if not os.path.exists(PYTORCH_MODEL_PATH):
         print(f"也未检测到 PyTorch 模型 ({PYTORCH_MODEL_PATH})。")
-        print("将运行一次训练脚本以创建一个随机初始化的模型...")
-        if not run_script(TRAIN_SCRIPT):
-            print("创建初始PyTorch模型失败，无法继续。")
+        print("正在创建一个随机初始化的新模型...")
+        try:
+            import torch
+            from popucom_nn_model import PomPomNN
+            model = PomPomNN()
+            torch.save(model.state_dict(), PYTORCH_MODEL_PATH)
+            print(f"随机初始化的模型已成功保存至 {PYTORCH_MODEL_PATH}。")
+        except ImportError as e:
+            print(f"错误: 无法导入模型类或相关依赖以生成初始模型。详情: {e}")
+            return False
+        except Exception as e:
+            print(f"错误: 创建初始模型时发生异常: {e}")
             return False
 
     # 2. 现在我们应该有了一个PyTorch模型，用它来构建TensorRT引擎
