@@ -120,9 +120,9 @@ class TensorRTModel:
         self.context.execute_async_v3(stream_handle=self.stream.cuda_stream)
         self.stream.synchronize()
 
-        policy_logits = self.tensors[self.output_names[1]]
+        policy_logits = self.tensors[self.output_names[0]]
         value_output = self.tensors[self.output_names[2]]
-        soft_policy_logits = self.tensors[self.output_names[0]]
+        soft_policy_logits = self.tensors[self.output_names[1]]
 
         batch_size = input_tensor.shape[0]
         return policy_logits[:batch_size], value_output[:batch_size], soft_policy_logits[:batch_size]
