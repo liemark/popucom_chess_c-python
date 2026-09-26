@@ -27,7 +27,7 @@ MAX_MOVES_PER_PLAYER = 25 # 每位玩家的最大步数
 # Channel 9: White's tile count (normalized value)
 # Channel 10: Unpainted tiles (1 for unpainted, 0 otherwise)
 # Channel 11: Komi given by White (second player) to Black (first player),
-#            normalized by KOMI_SCALE (komi / 20.0), broadcasted scalar plane.
+#            normalized by KOMI_SCALE (komi / 8.0), broadcasted scalar plane.
 #            后手必胜游戏：白给黑贴目以平衡。贴目后的胜负判定为
 #            score_diff + komi > 0 (黑胜)。
 #
@@ -35,4 +35,6 @@ MAX_MOVES_PER_PLAYER = 25 # 每位玩家的最大步数
 NUM_INPUT_CHANNELS = 12
 
 # 贴目通道归一化尺度（通道 11 的值 = komi / KOMI_SCALE）
-KOMI_SCALE = 20.0
+# [修改] 20 → 8：主采样区间 [-8, +8] 映射到 ±1.0，平衡贴目 (~3) 映射到 ~0.375，
+# 与其它归一化特征同量级；旧尺度 /20 下相邻贴目输入仅差 0.05，信号过弱
+KOMI_SCALE = 8.0
