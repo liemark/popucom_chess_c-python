@@ -55,7 +55,7 @@ extern "C" {
     // 辅助函数
     // [保留] 旧 11 通道接口（GUI / arena 未迁移前继续可用）
     API void boards_to_tensors_c(const Board* boards, int num_boards, float* output_tensor);
-    // [新增] 12 通道接口：通道 11 = 贴目平面 komi/KOMI_SCALE（与 popucom_nn_interface.KOMI_SCALE=20 一致）
+    // [新增] 12 通道接口：通道 11 = 贴目平面 komi/KOMI_SCALE（与 popucom_nn_interface.KOMI_SCALE=8 一致）
     API void boards_to_tensors_with_komi_c(const Board* boards, int num_boards, const int* komis, float* output_tensor);
 
 #ifdef __cplusplus

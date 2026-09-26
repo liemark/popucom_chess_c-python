@@ -313,7 +313,7 @@ extern "C" {
     API void boards_to_tensors_with_komi_c(const Board* boards, int num_boards, const int* komis, float* output_tensor) {
         const int plane_size = BOARD_SQUARES;
         const int NUM_INPUT_CHANNELS_WITH_KOMI = 12;
-        const float KOMI_SCALE = 20.0f;
+        const float KOMI_SCALE = 8.0f;
         const int tensor_size = NUM_INPUT_CHANNELS_WITH_KOMI * plane_size;
         for (int i = 0; i < num_boards; ++i) {
             float* current_tensor_ptr = output_tensor + i * tensor_size;
