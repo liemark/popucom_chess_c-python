@@ -1,4 +1,5 @@
 项目附带一个简易UI用于游玩，含简单的对局树用于复盘
+新分支仅需 2 轮训练即可超越人类常规水平（作者和作者周围的人）
 ![alt text](https://github.com/liemark/popucom_chess_c-python/blob/main/readme.png)
 本项目**针对泡姆棋（叭啵棋）的修改**：  
 **注意力模块（三消特性）**  
